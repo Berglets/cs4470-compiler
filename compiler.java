@@ -11,15 +11,16 @@ import java.util.List;
 public class compiler {
     public static void main(String[] args) throws Exception {
 
-        
         String filepath;
         if(args.length == 2)
-            filepath = args[1]; // relative filepath
+            filepath = args[1];
         else
             filepath = args[0];
 
-        String currentWorkingDirectory = System.getProperty("user.dir");
-        Path fullPath = Paths.get(currentWorkingDirectory, filepath);
+       // throw new Exception("FILEPATH----" + filepath + "FILEPATH----" + );
+
+        //String currentWorkingDirectory = System.getProperty("user.dir");
+        Path fullPath = Paths.get(filepath);
 
         String jpl_code = "";
         try {
@@ -29,7 +30,11 @@ public class compiler {
             //System.out.println(jpl_code);
         } catch (IOException e) {
             e.printStackTrace();
+	    System.out.println("Compilation failed");
+	    return;
         }
+	//throw new Exception("FILE CONTENTS: " + jpl_code);
+
 
         var output = Lex(jpl_code);
 
@@ -40,7 +45,8 @@ public class compiler {
                 System.out.println(token.toString());
             }
             System.out.println("Compilation succeeded");
-	}
+        }
+
     }
 
     public static boolean hasOnlyValidCharacters(String jpl_code) {
@@ -96,8 +102,9 @@ public class compiler {
         if(!has_digit || !has_dot)
             return new Tuple<>(-1, null);
 
-        float val = Float.parseFloat(str.substring(start_pos, curr_pos));
-        return new Tuple<>(curr_pos, new FloatToken(val));
+        String literal_val = str.substring(start_pos, curr_pos);
+        float val = Float.parseFloat(literal_val);
+        return new Tuple<>(curr_pos, new FloatToken(val, literal_val));
     }
 
 
@@ -106,17 +113,17 @@ public class compiler {
         if(str.charAt(start_pos) != '\"')
             return new Tuple<>(-1, null);
 
-        int curr_pos = start_pos;
+        int curr_pos = start_pos+1;
         int max_pos = str.length();
 
         while(curr_pos < max_pos) {
-            if(str.charAt(curr_pos) == '\"')
+            if(str.charAt(curr_pos) != '\"')
                 curr_pos++;
             else
                 break;
         }
 
-        return new Tuple<>(curr_pos, new StringToken(str.substring(start_pos, curr_pos)));
+        return new Tuple<>(curr_pos+1, new StringToken(str.substring(start_pos, curr_pos+1)));
     }
 
     public static Tuple<Integer, Token> isIdentifier(String str, int start_pos) {
@@ -133,7 +140,14 @@ public class compiler {
                 break;
         }
 
-        return new Tuple<>(curr_pos, new Identifier(str.substring(start_pos, curr_pos)));
+        String identifier = str.substring(start_pos, curr_pos);
+        // if this string is a keyword or punctuation, not valid
+        var tup1 = isKeyword(identifier, 0);
+        var tup2 = isPunctuation(identifier, 0);
+        if(tup1.x == identifier.length() || tup2.x == identifier.length())
+            return new Tuple<>(-1, null);
+
+        return new Tuple<>(curr_pos, new Identifier(identifier));
     }
 
     public static int isSingleLineComment(String str, int start_pos) {
@@ -152,6 +166,23 @@ public class compiler {
         }
 
         return curr_pos + 1;
+    }
+
+    public static int isMultiLineComment(String str, int start_pos) {
+        if(!startsWithSubstring(str, start_pos, "/*"))
+            return -1;
+
+        int curr_pos = start_pos;
+        int max_pos = str.length() - 1;
+
+        while(curr_pos < max_pos) {
+            if(str.charAt(curr_pos) == '*' && str.charAt(curr_pos+1) == '/')
+                break;
+            else
+                curr_pos++;
+        }
+
+        return curr_pos+2;
     }
 
     public static Tuple<Integer, Token> isOperator(String str, int start_pos) {
@@ -243,6 +274,11 @@ public class compiler {
                 continue;
             }
 
+            if(startsWithSubstring(jpl_code, curr_pos, "\\\n")) {
+                curr_pos += 2;
+                continue;
+            }
+
             // check for newline
             if(jpl_code.charAt(curr_pos) == '\n') {
                 if(tokens.size() == 0 || !tokens.get(tokens.size() - 1).toString().equals("NEWLINE")) // last token was not a newline
@@ -251,8 +287,15 @@ public class compiler {
                 continue;
             }
 
-            // check for comment
+            // check for comments
             int end_pos = isSingleLineComment(jpl_code, curr_pos);
+            if(end_pos != -1) {
+                curr_pos = end_pos;
+                if(tokens.size() == 0 || !tokens.get(tokens.size() - 1).toString().equals("NEWLINE")) // last token was not a newline
+                    tokens.add(new Newline());
+                continue;
+            }
+            end_pos = isMultiLineComment(jpl_code, curr_pos);
             if(end_pos != -1) {
                 curr_pos = end_pos;
                 continue;
@@ -282,14 +325,6 @@ public class compiler {
                 continue;
             }
 
-            // check for keyword
-            tup = isKeyword(jpl_code, curr_pos);
-            if(tup.x != -1) {
-                tokens.add(tup.y);
-                curr_pos = tup.x;
-                continue;
-            }
-
             // check for operator
             tup = isOperator(jpl_code, curr_pos);
             if(tup.x != -1) {
@@ -298,16 +333,24 @@ public class compiler {
                 continue;
             }
 
-            // check for punctuation
-            tup = isPunctuation(jpl_code, curr_pos);
+            // check for variable
+            tup = isIdentifier(jpl_code, curr_pos);
             if(tup.x != -1) {
                 tokens.add(tup.y);
                 curr_pos = tup.x;
                 continue;
             }
 
-            // check for variable
-            tup = isIdentifier(jpl_code, curr_pos);
+            // check for keyword
+            tup = isKeyword(jpl_code, curr_pos);
+            if(tup.x != -1) {
+                tokens.add(tup.y);
+                curr_pos = tup.x;
+                continue;
+            }
+
+            // check for punctuation
+            tup = isPunctuation(jpl_code, curr_pos);
             if(tup.x != -1) {
                 tokens.add(tup.y);
                 curr_pos = tup.x;
@@ -392,14 +435,16 @@ class IntToken extends Token {
 
 class FloatToken extends Token {
     float val;
+    String literal_val;
 
-    public FloatToken(float val) {
+    public FloatToken(float val, String literal_val) {
         this.val = val;
+        this.literal_val = literal_val;
     }
 
     @Override
     public String toString() {
-        return "FLOATVAL \'" + val + "\'";
+        return "FLOATVAL \'" + literal_val + "\'";
     }
 }
 

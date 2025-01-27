@@ -44,12 +44,12 @@ public class compiler {
 		}
 
 /*
-		String jpl_code = "show 99999999999999999999999999999999999";
+		String jpl_code = "show 9999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999.0";
 		var output = Parser.parse_code( Lexer.Lex(jpl_code) );
 		for(var node : output) {
 			System.out.println(node.toString());
-		}
-*/
+		}*/
+
 
 
         System.out.println("Compilation succeeded");
@@ -522,6 +522,8 @@ class Parser {
 	private static FloatExpr parse_floatexpr(List<Lexer.Token> tokens, int pos) throws ParserException {
 		String literal_val = expect_token(tokens, pos++, Lexer.FloatToken.class);
 		double val = Double.parseDouble(literal_val);
+		if(val == Double.POSITIVE_INFINITY || val ==Double.NEGATIVE_INFINITY)
+			throw new ParserException("Float is too big");
 
 		return new FloatExpr(pos-1, pos, val);
 	}

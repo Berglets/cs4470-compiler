@@ -44,7 +44,7 @@ public class compiler {
 		}
 
 /*
-		String jpl_code = "show 9999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999.0";
+		String jpl_code = "";
 		var output = Parser.parse_code( Lexer.Lex(jpl_code) );
 		for(var node : output) {
 			System.out.println(node.toString());
@@ -52,7 +52,7 @@ public class compiler {
 
 
 
-        System.out.println("Compilation succeeded");
+		System.out.println("Compilation succeeded");
 	}
 
 	public static String getFileContents(String filepath) throws Exception {
@@ -116,27 +116,111 @@ class Parser {
 	private static class Cmd extends ASTNode {}
 	private static class Expr extends ASTNode {}
 	private static class Type extends ASTNode {}
-	private static class Argument extends ASTNode {}
-	private static class VarLValue extends ASTNode {
-		String lvalue;
+	private static class Stmt extends ASTNode {}
+	private static class LValue extends ASTNode {
+		String identifier;
+	}
+	private static class Binding extends ASTNode{
+		LValue lvalue;
+		Type type;
 
-		public VarLValue(int start_byte, int end_pos, String lvalue) {
+		public Binding(int start_byte, int end_pos, LValue lvalue, Type type) {
 			this.start_byte = start_byte;
 			this.end_pos = end_pos;
 			this.lvalue = lvalue;
+			this.type = type;
 		}
 
 		@Override
 		public String toString() {
-			return "(VarLValue " + lvalue + ")";
+			return lvalue.toString() + " " + type.toString();
+		}
+	}
+
+	private static class VarLValue extends LValue {
+		public VarLValue(int start_byte, int end_pos, String identifier) {
+			this.start_byte = start_byte;
+			this.end_pos = end_pos;
+			this.identifier = identifier;
+		}
+
+		@Override
+		public String toString() {
+			return "(VarLValue " + identifier + ")";
+		}
+	}
+	private static class ArrayLValue extends LValue {
+		List<String> variables;
+
+		public ArrayLValue(int start_byte, int end_pos, String identifier, List<String> variables) {
+			this.start_byte = start_byte;
+			this.end_pos = end_pos;
+			this.identifier = identifier;
+			this.variables = variables;
+		}
+
+		@Override
+		public String toString() {
+			String txt = "";
+			for(String v : variables)
+				txt += " " + v;
+
+			return "(ArrayLValue " + identifier + txt + ")";
+		}
+	}
+
+	private static class LetStmt extends Stmt {
+		LValue lvalue;
+		Expr expr;
+
+		public LetStmt(int start_byte, int end_pos, LValue lvalue, Expr expr) {
+			this.start_byte = start_byte;
+			this.end_pos = end_pos;
+			this.lvalue = lvalue;
+			this.expr = expr;
+		}
+
+		@Override
+		public String toString() {
+			return "(LetStmt " + lvalue.toString() + " " + expr.toString() + ")";
+		}
+	}
+	private static class AssertStmt extends Stmt {
+		Expr expr;
+		String str;
+
+		public AssertStmt(int start_byte, int end_pos, Expr expr, String str) {
+			this.start_byte = start_byte;
+			this.end_pos = end_pos;
+			this.expr = expr;
+			this.str = str;
+		}
+
+		@Override
+		public String toString() {
+			return "(AssertStmt " + expr.toString() + " " + str + ")";
+		}
+	}
+	private static class ReturnStmt extends Stmt {
+		Expr expr;
+
+		public ReturnStmt(int start_byte, int end_pos, Expr expr) {
+			this.start_byte = start_byte;
+			this.end_pos = end_pos;
+			this.expr = expr;
+		}
+
+		@Override
+		public String toString() {
+			return "(ReturnStmt " + expr.toString() + ")";
 		}
 	}
 
 	private static class ReadCmd extends Cmd {
 		String read_file;
-		VarLValue lvalue;
+		LValue lvalue;
 
-		public ReadCmd(int start_byte, int end_pos, String read_file, VarLValue lvalue) {
+		public ReadCmd(int start_byte, int end_pos, String read_file, LValue lvalue) {
 			this.start_byte = start_byte;
 			this.end_pos = end_pos;
 			this.read_file = read_file;
@@ -165,10 +249,10 @@ class Parser {
 		}
 	}
 	private static class LetCmd extends Cmd {
-		VarLValue lvalue;
+		LValue lvalue;
 		Expr expr;
 
-		public LetCmd(int start_byte, int end_pos, VarLValue lvalue,  Expr expr) {
+		public LetCmd(int start_byte, int end_pos, LValue lvalue,  Expr expr) {
 			this.start_byte = start_byte;
 			this.end_pos = end_pos;
 			this.lvalue = lvalue;
@@ -236,6 +320,66 @@ class Parser {
 		@Override
 		public String toString() {
 			return "(TimeCmd " + cmd.toString() + ")";
+		}
+	}
+	private static class FnCmd extends Cmd {
+		String identifier;
+		List<Binding> bindings;
+		Type return_value;
+		List<Stmt> statements;
+
+		public FnCmd(int start_byte, int end_pos, String identifier, List<Binding> bindings, Type return_value, List<Stmt> statements ) {
+			this.start_byte = start_byte;
+			this.end_pos = end_pos;
+			this.identifier = identifier;
+			this.bindings = bindings;
+			this.return_value = return_value;
+			this.statements = statements;
+		}
+
+		@Override
+		public String toString() {
+			String bindings_txt = "";
+			if(bindings != null && bindings.size() != 0) {
+				for(Binding bind : bindings)
+					bindings_txt += bind.toString() + " ";
+				bindings_txt = bindings_txt.substring(0, bindings_txt.length() - 1); // remove final space
+			}
+
+			String statements_txt = "";
+			if(statements != null && statements.size() != 0) {
+				for(Stmt s : statements)
+					statements_txt += " " + s.toString();
+			}
+
+			return "(FnCmd " + identifier + " ((" + bindings_txt + ")) " + return_value + statements_txt + ")";
+		}
+	}
+	private static class StructCmd extends Cmd {
+		String identifier;
+		List<String> variables;
+		List<Type> types;
+
+		public StructCmd(int start_byte, int end_pos, String identifier, List<String> variables, List<Type> types) {
+			this.start_byte = start_byte;
+			this.end_pos = end_pos;
+			this.identifier = identifier;
+			this.variables = variables;
+			this.types = types;
+		}
+
+		@Override
+		public String toString() {
+			String bindings_txt = "";
+			if(variables == null || variables.size() == 0) {
+				return "(StructCmd " + identifier + ")";
+			}
+			else {
+				for(int i = 0; i < variables.size(); i++)
+					bindings_txt += " " + variables.get(i) + " " + types.get(i).toString();
+			}
+
+			return "(StructCmd " + identifier + bindings_txt + ")";
 		}
 	}
 
@@ -325,6 +469,185 @@ class Parser {
 			}
 		}
 	}
+	private static class VoidExpr extends Expr {
+		public VoidExpr(int start_byte, int end_pos) {
+			this.start_byte = start_byte;
+			this.end_pos = end_pos;
+		}
+
+		@Override
+		public String toString() {
+			return "(VoidExpr)";
+		}
+	}
+	private static class StructLiteralExpr extends Expr {
+		String identifier;
+		List<Expr> expressions;
+
+		public StructLiteralExpr(int start_byte, int end_pos, String identifier, List<Expr> expressions) {
+			this.start_byte = start_byte;
+			this.end_pos = end_pos;
+			this.identifier = identifier;
+			this.expressions = expressions;
+		}
+
+		@Override
+		public String toString() {
+			if(expressions == null || expressions.size() == 0)
+				return "(StructLiteralExpr " + identifier + ")";
+			else {
+				String str = "";
+				for(Expr e : expressions)
+					str += " " + e.toString();
+
+				return "(StructLiteralExpr " + identifier + str + ")";
+			}
+		}
+	}
+	private static class DotExpr extends Expr {
+		Expr expr;
+		String str;
+
+		public DotExpr(int start_byte, int end_pos, Expr expr, String str) {
+			this.start_byte = start_byte;
+			this.end_pos = end_pos;
+			this.expr = expr;
+			this.str = str;
+		}
+
+		@Override
+		public String toString() {
+			return "(DotExpr " + expr.toString() + " " + str + ")";
+		}
+	}
+	private static class ArrayIndexExpr extends Expr {
+		Expr expr;
+		List<Expr> expressions;
+
+		public ArrayIndexExpr(int start_byte, int end_pos, Expr expr, List<Expr> expressions) {
+			this.start_byte = start_byte;
+			this.end_pos = end_pos;
+			this.expr = expr;
+			this.expressions = expressions;
+		}
+
+		@Override
+		public String toString() {
+			if(expressions == null || expressions.size() == 0)
+				return "(ArrayIndexExpr " + expr.toString() + ")";
+			else {
+				String str = "";
+				for(Expr e : expressions)
+					str += " " + e.toString();
+
+				return "(ArrayIndexExpr " + expr.toString() + str + ")";
+			}
+		}
+	}
+	private static class CallExpr extends Expr {
+		String identifier;
+		List<Expr> expressions;
+
+		public CallExpr(int start_byte, int end_pos, String identifier, List<Expr> expressions) {
+			this.start_byte = start_byte;
+			this.end_pos = end_pos;
+			this.identifier = identifier;
+			this.expressions = expressions;
+		}
+
+		@Override
+		public String toString() {
+			if(expressions == null || expressions.size() == 0)
+				return "(CallExpr " + identifier + ")";
+			else {
+				String str = "";
+				for(Expr e : expressions)
+					str += " " + e.toString();
+
+				return "(CallExpr " + identifier + str + ")";
+			}
+		}
+	}
+
+	private static class IntType extends Type {
+
+		public IntType(int start_byte, int end_pos) {
+			this.start_byte = start_byte;
+			this.end_pos = end_pos;
+		}
+
+		@Override
+		public String toString() {
+			return "(IntType)";
+		}
+	}
+	private static class FloatType extends Type {
+
+		public FloatType(int start_byte, int end_pos) {
+			this.start_byte = start_byte;
+			this.end_pos = end_pos;
+		}
+
+		@Override
+		public String toString() {
+			return "(FloatType)";
+		}
+	}
+	private static class BoolType extends Type {
+
+		public BoolType(int start_byte, int end_pos) {
+			this.start_byte = start_byte;
+			this.end_pos = end_pos;
+		}
+
+		@Override
+		public String toString() {
+			return "(BoolType)";
+		}
+	}
+	private static class VoidType extends Type {
+
+		public VoidType(int start_byte, int end_pos) {
+			this.start_byte = start_byte;
+			this.end_pos = end_pos;
+		}
+
+		@Override
+		public String toString() {
+			return "(VoidType)";
+		}
+	}
+	private static class StructType extends Type {
+		String struct_name;
+
+		public StructType(int start_byte, int end_pos, String struct_name) {
+			this.start_byte = start_byte;
+			this.end_pos = end_pos;
+			this.struct_name = struct_name;
+		}
+
+		@Override
+		public String toString() {
+			return "(StructType " + struct_name + ")";
+		}
+	}
+	private static class ArrayType extends Type {
+		Type type;
+		int dimension;
+
+		public ArrayType(int start_byte, int end_pos, Type type, int dimension) {
+			this.start_byte = start_byte;
+			this.end_pos = end_pos;
+			this.type = type;
+			this.dimension = dimension;
+		}
+
+		@Override
+		public String toString() {
+			return "(ArrayType " + type.toString() + " " + dimension + ")";
+		}
+	}
+
 
 	private static class ParserException extends Exception {
 
@@ -348,7 +671,7 @@ class Parser {
 		var token = tokens.get(pos);
 		if(!type.isInstance(token))
 			throw new ParserException("\nExpected " + type.getSimpleName() + " got " + token.getClass().getSimpleName()
-			+ "\nByte position: " + token.start_byte);
+					+ "\nByte position: " + token.start_byte);
 
 		if(type == Lexer.KeywordToken.class)
 			return ((Lexer.KeywordToken)token).keyword.toLowerCase();
@@ -362,8 +685,6 @@ class Parser {
 			return ((Lexer.FloatToken)token).literal_val;
 		else if(type == Lexer.IntToken.class)
 			return ((Lexer.IntToken)token).literal_val;
-
-
 
 		return null; //TODO remove
 	}
@@ -401,11 +722,17 @@ class Parser {
 	}
 
 
-
+	/**
+	 *  COMMANDS
+	 */
 
 	private static Cmd parse_cmd(List<Lexer.Token> tokens, int pos) throws ParserException {
 		if(is_token(tokens, pos, Lexer.KeywordToken.class, "read"))
 			return parse_readcmd(tokens, pos);
+		else if(is_token(tokens, pos, Lexer.KeywordToken.class, "struct"))
+			return parse_structcmd(tokens, pos);
+		else if(is_token(tokens, pos, Lexer.KeywordToken.class, "fn"))
+			return parse_fncmd(tokens, pos);
 		else if(is_token(tokens, pos, Lexer.KeywordToken.class, "write"))
 			return parse_writecmd(tokens, pos);
 		else if(is_token(tokens, pos, Lexer.KeywordToken.class, "let"))
@@ -422,13 +749,61 @@ class Parser {
 		throw new ParserException("Expected cmd at byte:" + tokens.get(pos).start_byte);
 	}
 
+	private static FnCmd parse_fncmd(List<Lexer.Token> tokens, int pos) throws ParserException {
+		int start_pos = pos;
+		expect_keyword(tokens, pos++, "fn");
+		String function_name = expect_token(tokens, pos++, Lexer.IdentifierToken.class);
+		expect_punctuation(tokens, pos++, '(');
+		List<Binding> bindings = parse_binding_chain(tokens, pos);
+		pos = bindings.size() > 0 ?
+				bindings.get(bindings.size() - 1).end_pos : pos;
+		pos++;
+		expect_punctuation(tokens, pos++, ':');
+		Type type = parse_type(tokens, pos);
+		pos = type.end_pos;
+		expect_punctuation(tokens, pos++, '{');
+		expect_token(tokens, pos++, Lexer.NewlineToken.class);
+		List<Stmt> statements = parse_stmt_chain(tokens, pos);
+		pos = statements.size() > 0 ?
+				statements.get(statements.size() - 1).end_pos + 2: pos + 1;
+		return new FnCmd(tokens.get(start_pos).start_byte, pos, function_name, bindings, type, statements);
+	}
+
+	private static StructCmd parse_structcmd(List<Lexer.Token> tokens, int pos) throws ParserException {
+		int start_pos = pos;
+		expect_keyword(tokens, pos++, "struct");
+		String struct_name = expect_token(tokens, pos++, Lexer.IdentifierToken.class);
+		expect_punctuation(tokens, pos++, '{');
+		expect_token(tokens, pos++, Lexer.NewlineToken.class);
+
+		List<String> variables = new ArrayList<>();
+		List<Type> types = new ArrayList<>();
+
+		while(pos < tokens.size()) {
+			if(is_token(tokens, pos, Lexer.PunctuationToken.class, "}"))
+				return new StructCmd(tokens.get(start_pos).start_byte, ++pos, struct_name, variables, types);
+
+			String var = expect_token(tokens, pos++, Lexer.IdentifierToken.class);
+			expect_punctuation(tokens, pos++, ':');
+			Type type = parse_type(tokens, pos);
+			pos = type.end_pos;
+
+			variables.add(var);
+			types.add(type);
+
+			expect_token(tokens, pos++, Lexer.NewlineToken.class);
+		}
+
+		throw new ParserException("Expected closing curly brace at byte:" + tokens.get(pos).start_byte);
+	}
+
 	private static ReadCmd parse_readcmd(List<Lexer.Token> tokens, int pos) throws ParserException {
 		int start_pos = pos;
 		expect_keyword(tokens, pos++, "read");
 		expect_keyword(tokens, pos++, "image");
 		String str = expect_token(tokens, pos++, Lexer.StringToken.class);
 		expect_keyword(tokens, pos++, "to");
-		VarLValue lvalue = parse_lvalue(tokens, pos);
+		LValue lvalue = parse_lvalue(tokens, pos);
 		pos = lvalue.end_pos;
 
 		return new ReadCmd(tokens.get(start_pos).start_byte, pos, str, lvalue);
@@ -449,7 +824,7 @@ class Parser {
 	private static LetCmd parse_letcmd(List<Lexer.Token> tokens, int pos) throws ParserException {
 		int start_pos = pos;
 		expect_keyword(tokens, pos++, "let");
-		VarLValue lvalue = parse_lvalue(tokens, pos);
+		LValue lvalue = parse_lvalue(tokens, pos);
 		pos = lvalue.end_pos;
 		expect_punctuation(tokens, pos++, '=');
 		Expr expr = parse_expr(tokens, pos);
@@ -495,88 +870,344 @@ class Parser {
 		return new TimeCmd(tokens.get(start_pos).start_byte, pos, cmd);
 	}
 
-	private static Expr parse_expr(List<Lexer.Token> tokens, int pos) throws ParserException {
-		if(is_token(tokens, pos, Lexer.IntToken.class))
-			return parse_intexpr(tokens, pos);
-		else if(is_token(tokens, pos, Lexer.FloatToken.class))
-			return parse_floatexpr(tokens, pos);
-		else if(is_token(tokens, pos, Lexer.KeywordToken.class, "true"))
-			return parse_trueexpr(tokens, pos);
-		else if(is_token(tokens, pos, Lexer.KeywordToken.class, "false"))
-			return parse_falseexpr(tokens, pos);
-		else if(is_token(tokens, pos, Lexer.IdentifierToken.class))
-			return parse_varexpr(tokens, pos);
-		else if(is_token(tokens, pos, Lexer.PunctuationToken.class, "["))
-			return parse_arrayliteralexpr(tokens, pos);
+	/**
+	 *  STATEMENTS
+	 */
 
-		throw new ParserException("Expected expr at byte:" + tokens.get(pos).start_byte);
+	private static Stmt parse_stmt(List<Lexer.Token> tokens, int pos) throws ParserException {
+		if(is_token(tokens, pos, Lexer.KeywordToken.class, "let"))
+			return parse_letstmt(tokens, pos);
+		else if(is_token(tokens, pos, Lexer.KeywordToken.class, "assert"))
+			return parse_assertstmt(tokens, pos);
+		else if(is_token(tokens, pos, Lexer.KeywordToken.class, "return"))
+			return parse_returnstmt(tokens, pos);
+		else throw new ParserException("Expected stmt at byte:" + tokens.get(pos).start_byte);
+	}
+
+	private static LetStmt parse_letstmt(List<Lexer.Token> tokens, int pos) throws ParserException {
+		int start_pos = pos;
+		expect_keyword(tokens, pos++, "let");
+		LValue lvalue = parse_lvalue(tokens, pos);
+		pos = lvalue.end_pos;
+		expect_punctuation(tokens, pos++, '=');
+		Expr expr = parse_expr(tokens, pos);
+		pos = expr.end_pos;
+		return new LetStmt(tokens.get(start_pos).start_byte, pos, lvalue, expr);
+	}
+
+	private static AssertStmt parse_assertstmt(List<Lexer.Token> tokens, int pos) throws ParserException {
+		int start_pos = pos;
+		expect_keyword(tokens, pos++, "assert");
+		Expr expr = parse_expr(tokens, pos);
+		pos = expr.end_pos;
+		expect_punctuation(tokens, pos++, ',');
+		String str = expect_token(tokens, pos++, Lexer.StringToken.class);
+		return new AssertStmt(tokens.get(start_pos).start_byte, pos, expr, str);
+	}
+
+	private static ReturnStmt parse_returnstmt(List<Lexer.Token> tokens, int pos) throws ParserException {
+		int start_pos = pos;
+		expect_keyword(tokens, pos++, "return");
+		Expr expr = parse_expr(tokens, pos);
+		pos = expr.end_pos;
+		return new ReturnStmt(tokens.get(start_pos).start_byte, pos, expr);
+	}
+
+	private static List<Stmt> parse_stmt_chain(List<Lexer.Token> tokens, int pos) throws ParserException {
+		List<Stmt> statements = new ArrayList<>();
+
+		if(is_token(tokens, pos, Lexer.PunctuationToken.class, "}"))
+			return statements;
+
+		while(pos < tokens.size()) {
+			Stmt stmt = parse_stmt(tokens, pos);
+			statements.add(stmt);
+			pos = stmt.end_pos;
+
+			if(!is_token(tokens, pos++, Lexer.NewlineToken.class))
+				throw new ParserException("Expected newline at byte:" + tokens.get(pos).start_byte);
+
+			if(is_token(tokens, pos, Lexer.PunctuationToken.class, "}"))
+				return statements;
+		}
+
+		throw new ParserException("Expected closing curly brace inside function definition");
+	}
+
+
+	/**
+	 *  EXPRESSIONS
+	 */
+
+	private static Expr parse_expr(List<Lexer.Token> tokens, int pos) throws ParserException {
+		Expr expr;
+
+		if(is_token(tokens, pos, Lexer.IntToken.class))
+			expr = parse_intexpr(tokens, pos);
+		else if(is_token(tokens, pos, Lexer.FloatToken.class))
+			expr = parse_floatexpr(tokens, pos);
+		else if(is_token(tokens, pos, Lexer.KeywordToken.class, "true"))
+			expr = parse_trueexpr(tokens, pos);
+		else if(is_token(tokens, pos, Lexer.KeywordToken.class, "false"))
+			expr = parse_falseexpr(tokens, pos);
+		else if(is_token(tokens, pos, Lexer.KeywordToken.class, "void"))
+			expr = parse_voidexpr(tokens, pos);
+		else if(is_token(tokens, pos, Lexer.IdentifierToken.class))
+			expr = parse_varexpr(tokens, pos);
+		else if(is_token(tokens, pos, Lexer.PunctuationToken.class, "["))
+			expr = parse_arrayliteralexpr(tokens, pos);
+		else if(is_token(tokens, pos, Lexer.PunctuationToken.class, "("))
+			expr = parse_innerexpr(tokens, pos);
+		else throw new ParserException("Expected expr at byte:" + tokens.get(pos).start_byte);
+
+		return parse_expr_cont(tokens, expr.end_pos, expr);
+
+	}
+
+	private static Expr parse_expr_cont(List<Lexer.Token> tokens, int pos, Expr expr_orig) throws ParserException {
+		// <exp>.<variable>
+		if(is_token(tokens, pos, Lexer.PunctuationToken.class, ".")) {
+			pos++;
+			String identifier = expect_token(tokens, pos++, Lexer.IdentifierToken.class);
+			Expr new_orig = new DotExpr(expr_orig.start_byte, pos, expr_orig, identifier);
+			return parse_expr_cont(tokens, pos, new_orig);
+		}
+		// <expr> [<expr, ...]
+		else if(is_token(tokens, pos, Lexer.PunctuationToken.class, "[")) {
+			pos++;
+			List<Expr> expressions = parse_expr_chain(tokens, pos, "]");
+			int end_pos = expressions.size() > 0 ?
+					expressions.get(expressions.size() - 1).end_pos : pos;
+			end_pos++;
+			Expr new_orig = new ArrayIndexExpr(expr_orig.start_byte, end_pos, expr_orig, expressions);
+			return parse_expr_cont(tokens, end_pos, new_orig);
+		}
+		else return expr_orig;
+	}
+
+	private static List<Expr> parse_expr_chain(List<Lexer.Token> tokens, int pos, String closing_delimiter) throws ParserException {
+		// parses  <expr>, ... )  with any delimiter
+
+		List<Expr> expressions = new ArrayList<>();
+
+		// i.e. [] {} ()
+		if(is_token(tokens, pos, Lexer.PunctuationToken.class, closing_delimiter))
+			return expressions;
+
+		while(pos < tokens.size()) {
+			Expr expr = parse_expr(tokens, pos);
+			expressions.add(expr);
+			pos = expr.end_pos;
+
+			if(is_token(tokens, pos, Lexer.PunctuationToken.class, closing_delimiter))
+				return expressions;
+
+			if(!is_token(tokens, pos, Lexer.PunctuationToken.class, ","))
+				throw new ParserException("Expected comma at byte:" + tokens.get(pos).start_byte);
+
+			pos++;
+		}
+
+		throw new ParserException("Expected closing delimiter");
+	}
+
+	private static Expr parse_innerexpr(List<Lexer.Token> tokens, int pos) throws ParserException {
+		expect_punctuation(tokens, pos++, '(');
+		Expr expr = parse_expr(tokens, pos);
+		pos = expr.end_pos;
+		expect_punctuation(tokens, pos++, ')');
+		expr.end_pos = pos;
+		return expr;
 	}
 
 	private static IntExpr parse_intexpr(List<Lexer.Token> tokens, int pos) throws ParserException {
 		String literal_val = expect_token(tokens, pos++, Lexer.IntToken.class);
 		long val = Long.parseLong(literal_val);
 
-		return new IntExpr(pos-1, pos, val);
+		return new IntExpr(tokens.get(pos-1).start_byte, pos, val);
 	}
 
 	private static FloatExpr parse_floatexpr(List<Lexer.Token> tokens, int pos) throws ParserException {
 		String literal_val = expect_token(tokens, pos++, Lexer.FloatToken.class);
 		double val = Double.parseDouble(literal_val);
-		if(val == Double.POSITIVE_INFINITY || val ==Double.NEGATIVE_INFINITY)
+		if(val == Double.POSITIVE_INFINITY || val == Double.NEGATIVE_INFINITY)
 			throw new ParserException("Float is too big");
 
-		return new FloatExpr(pos-1, pos, val);
+		return new FloatExpr(tokens.get(pos-1).start_byte, pos, val);
+	}
+
+	private static VoidExpr parse_voidexpr(List<Lexer.Token> tokens, int pos) throws ParserException {
+		expect_keyword(tokens, pos++, "void");
+		return new VoidExpr(tokens.get(pos-1).start_byte, pos);
 	}
 
 	private static TrueExpr parse_trueexpr(List<Lexer.Token> tokens, int pos) throws ParserException {
 		expect_keyword(tokens, pos++, "true");
-		return new TrueExpr(pos-1, pos);
+		return new TrueExpr(tokens.get(pos-1).start_byte, pos);
 	}
 
 	private static FalseExpr parse_falseexpr(List<Lexer.Token> tokens, int pos) throws ParserException {
 		expect_keyword(tokens, pos++, "false");
-		return new FalseExpr(pos-1, pos);
+		return new FalseExpr(tokens.get(pos-1).start_byte, pos);
 	}
 
-	private static VarExpr parse_varexpr(List<Lexer.Token> tokens, int pos) throws ParserException {
+	private static Expr parse_varexpr(List<Lexer.Token> tokens, int pos) throws ParserException {
+		int start_pos = pos-1;
 		String identifier = expect_token(tokens, pos++, Lexer.IdentifierToken.class);
-		return new VarExpr(pos-1, pos, identifier);
+
+		// variable {<expr>,...}
+		if(is_token(tokens, pos, Lexer.PunctuationToken.class, "{")) {
+			pos++;
+			List<Expr> expressions = parse_expr_chain(tokens, pos, "}");
+			int end_pos = expressions.size() > 0 ?
+					expressions.get(expressions.size() - 1).end_pos : pos;
+			end_pos++;
+			return new StructLiteralExpr(tokens.get(start_pos).start_byte, end_pos, identifier, expressions);
+		}
+		// variable (<expr>,...)
+		else if(is_token(tokens, pos, Lexer.PunctuationToken.class, "(")) {
+			pos++;
+			List<Expr> expressions = parse_expr_chain(tokens, pos, ")");
+			int end_pos = expressions.size() > 0 ?
+					expressions.get(expressions.size() - 1).end_pos : pos;
+			end_pos++;
+			return new CallExpr(tokens.get(start_pos).start_byte, end_pos, identifier, expressions);
+		}
+		else return new VarExpr(tokens.get(start_pos).start_byte, pos, identifier);
+
 	}
 
 	private static ArrayLiteralExpr parse_arrayliteralexpr(List<Lexer.Token> tokens, int pos) throws ParserException {
 		int start_pos = pos;
 		expect_punctuation(tokens, pos++, '[');
+		List<Expr> expressions = parse_expr_chain(tokens, pos, "]");
 
-		// [] | [exprs, ...]
-		if(is_token(tokens, pos, Lexer.PunctuationToken.class, "]"))
-			return new ArrayLiteralExpr(tokens.get(start_pos).start_byte, pos+1, null);
-		else {
-			List<Expr> exprs = parse_expressions(tokens, pos);
-			int new_pos = exprs.get(exprs.size()-1).end_pos + 1;
-			return new ArrayLiteralExpr(tokens.get(start_pos).start_byte, new_pos, exprs);
+		int end_pos = expressions.size() > 0 ?
+				expressions.get(expressions.size() - 1).end_pos : pos;
+		end_pos++;
+
+		return new ArrayLiteralExpr(tokens.get(start_pos).start_byte, end_pos, expressions);
+	}
+
+
+	/**
+	 *  TYPES
+	 */
+
+	private static Type parse_type(List<Lexer.Token> tokens, int pos) throws ParserException {
+		int start_pos = pos;
+		Type type;
+
+		if(is_token(tokens, pos, Lexer.KeywordToken.class, "int"))
+			type = new IntType(tokens.get(start_pos).start_byte, ++pos);
+		else if(is_token(tokens, pos, Lexer.KeywordToken.class, "float"))
+			type = new FloatType(tokens.get(start_pos).start_byte, ++pos);
+		else if(is_token(tokens, pos, Lexer.KeywordToken.class, "bool"))
+			type = new BoolType(tokens.get(start_pos).start_byte, ++pos);
+		else if(is_token(tokens, pos, Lexer.KeywordToken.class, "void"))
+			type = new VoidType(tokens.get(start_pos).start_byte, ++pos);
+		else if(is_token(tokens, pos, Lexer.IdentifierToken.class)) {
+			String identifier = expect_token(tokens, pos, Lexer.IdentifierToken.class);
+			type = new StructType(tokens.get(start_pos).start_byte, ++pos, identifier);
 		}
+		else throw new ParserException("Expected type at byte:" + tokens.get(start_pos).start_byte);
+
+		return parse_type_cont(tokens, pos, type);
 	}
 
-	private static List<Expr> parse_expressions(List<Lexer.Token> tokens, int pos) throws ParserException {
-		Expr expr = parse_expr(tokens, pos);
-		pos = expr.end_pos;
+	private static Type parse_type_cont(List<Lexer.Token> tokens, int pos, Type type_orig) throws ParserException {
+		int start_pos = pos;
 
-		LinkedList<Expr> list;
+		if(is_token(tokens, pos++, Lexer.PunctuationToken.class, "[")) {
+			int dimension = 1;
+			while(is_token(tokens, pos++, Lexer.PunctuationToken.class, ","))
+				dimension++;
 
-		if(is_token(tokens, pos++, Lexer.PunctuationToken.class, ","))
-			list = (LinkedList<Expr>)parse_expressions(tokens, pos);
-		else
-			list = new LinkedList<>();
+			if(is_token(tokens, pos-1, Lexer.PunctuationToken.class, "]")) {
+				Type array_type = new ArrayType(tokens.get(start_pos).start_byte, pos, type_orig, dimension);
+				return parse_type_cont(tokens, pos, array_type);
+			}
 
-		list.addFirst(expr);
-		return list;
+			throw new ParserException("Unclosed bracket starting at byte:" + tokens.get(start_pos).start_byte);
+		}
+		else return type_orig;
 	}
 
-	private static VarLValue parse_lvalue(List<Lexer.Token> tokens, int pos) throws ParserException {
-		String lvalue = expect_token(tokens, pos++, Lexer.IdentifierToken.class);
-		return new VarLValue(tokens.get(pos-1).start_byte, pos, lvalue);
+	/**
+	 *  LVALUE
+	 */
+
+	private static LValue parse_lvalue(List<Lexer.Token> tokens, int pos) throws ParserException {
+		int start_pos = pos;
+		String identifier = expect_token(tokens, pos++, Lexer.IdentifierToken.class);
+		if(is_token(tokens, pos, Lexer.PunctuationToken.class, "[")) {
+			pos++;
+			List<String> variables = parse_variable_chain(tokens, pos);
+			int end_pos = variables.size() == 0 ? pos + 1 : pos + (variables.size() * 2);
+			return new ArrayLValue(tokens.get(start_pos).start_byte, end_pos, identifier, variables);
+		}
+		else return new VarLValue(tokens.get(start_pos).start_byte, pos, identifier);
 	}
 
+	private static List<String> parse_variable_chain(List<Lexer.Token> tokens, int pos) throws ParserException {
+		List<String> variables = new ArrayList<>();
+
+		if(is_token(tokens, pos, Lexer.PunctuationToken.class, "]"))
+			return variables;
+
+		while(pos < tokens.size()) {
+			String var = expect_token(tokens, pos++, Lexer.IdentifierToken.class);
+			variables.add(var);
+
+			if(is_token(tokens, pos, Lexer.PunctuationToken.class, "]"))
+				return variables;
+
+			if(!is_token(tokens, pos, Lexer.PunctuationToken.class, ","))
+				throw new ParserException("Expected comma at byte:" + tokens.get(pos).start_byte);
+
+			pos++;
+		}
+
+		throw new ParserException("Expected closing bracket");
+	}
+
+
+	/**
+	 *  BINDINGS
+	 */
+
+	private static Binding parse_binding(List<Lexer.Token> tokens, int pos) throws ParserException {
+		int start_pos = pos;
+		LValue lvalue = parse_lvalue(tokens, pos);
+		pos = lvalue.end_pos;
+		expect_punctuation(tokens, pos++, ':');
+		Type type = parse_type(tokens, pos);
+		pos = type.end_pos;
+		return new Binding(tokens.get(pos).start_byte, pos, lvalue, type);
+	}
+
+	private static List<Binding> parse_binding_chain(List<Lexer.Token> tokens, int pos) throws ParserException {
+		List<Binding> bindings = new ArrayList<>();
+
+		if(is_token(tokens, pos, Lexer.PunctuationToken.class, ")"))
+			return bindings;
+
+		while(pos < tokens.size()) {
+			Binding bind = parse_binding(tokens, pos);
+			bindings.add(bind);
+			pos = bind.end_pos;
+
+			if(is_token(tokens, pos, Lexer.PunctuationToken.class, ")"))
+				return bindings;
+
+			if(!is_token(tokens, pos, Lexer.PunctuationToken.class, ","))
+				throw new ParserException("Expected comma at byte:" + tokens.get(pos).start_byte);
+
+			pos++;
+		}
+
+		throw new ParserException("Expected closing parenthesis inside parameter declaration");
+	}
 
 }
 

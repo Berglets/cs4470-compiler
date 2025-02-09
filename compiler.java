@@ -1,5 +1,4 @@
 
-
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -42,14 +41,14 @@ public class compiler {
 				System.out.println(node.toString());
 			}
 		}
-
 /*
+//"show a + d - q / 4 > t * 4 && q + z != 4";   4 && q + z != 4
+		// show -3[]     // precedence here matters
 		String jpl_code = "";
 		var output = Parser.parse_code( Lexer.Lex(jpl_code) );
 		for(var node : output) {
 			System.out.println(node.toString());
 		}*/
-
 
 
 		System.out.println("Compilation succeeded");
@@ -569,6 +568,115 @@ class Parser {
 		}
 	}
 
+	private static class UnopExpr extends Expr {
+		String op;
+		Expr expr;
+
+		public UnopExpr(int start_byte, int end_pos, String op, Expr expr) {
+			this.start_byte = start_byte;
+			this.end_pos = end_pos;
+			this.op = op;
+			this.expr = expr;
+		}
+
+		@Override
+		public String toString() {
+			return "(UnopExpr " + op + " " + expr.toString() + ")";
+		}
+	}
+	private static class BinopExpr extends Expr {
+		String op;
+		Expr expr1;
+		Expr expr2;
+
+		public BinopExpr(int start_byte, int end_pos, String op, Expr expr1, Expr expr2) {
+			this.start_byte = start_byte;
+			this.end_pos = end_pos;
+			this.op = op;
+			this.expr1 = expr1;
+			this.expr2 = expr2;
+		}
+
+		@Override
+		public String toString() {
+			return "(BinopExpr " + expr1.toString() + " " + op + " " + expr2.toString() + ")";
+		}
+	}
+	private static class IfExpr extends Expr {
+		Expr expr1;
+		Expr expr2;
+		Expr expr3;
+
+		public IfExpr(int start_byte, int end_pos, Expr expr1, Expr expr2, Expr expr3) {
+			this.start_byte = start_byte;
+			this.end_pos = end_pos;
+			this.expr1 = expr1;
+			this.expr2 = expr2;
+			this.expr3 = expr3;
+		}
+
+		@Override
+		public String toString() {
+			return "(IfExpr " + expr1.toString() + " " + expr2.toString() + " " + expr3.toString() + ")";
+		}
+	}
+	private static class ArrayLoopExpr extends Expr {
+
+		List<String> variables;
+		List<Expr> expressions;
+		Expr expr;
+
+		public ArrayLoopExpr(int start_byte, int end_pos, List<String> variables, List<Expr> expressions, Expr expr) {
+			this.start_byte = start_byte;
+			this.end_pos = end_pos;
+			this.variables = variables;
+			this.expressions = expressions;
+			this.expr = expr;
+		}
+
+		@Override
+		public String toString() {
+			if(expressions == null || expressions.size() == 0)
+				return "(ArrayLoopExpr " + expr.toString() + ")";
+			else {
+				String str = "";
+				for(int i = 0; i < expressions.size(); i++) {
+					str += " " + variables.get(i) + " " + expressions.get(i).toString();
+				}
+
+				return "(ArrayLoopExpr" + str + " " + expr.toString() + ")";
+			}
+		}
+	}
+	private static class SumLoopExpr extends Expr {
+
+		List<String> variables;
+		List<Expr> expressions;
+		Expr expr;
+
+		public SumLoopExpr(int start_byte, int end_pos, List<String> variables, List<Expr> expressions, Expr expr) {
+			this.start_byte = start_byte;
+			this.end_pos = end_pos;
+			this.variables = variables;
+			this.expressions = expressions;
+			this.expr = expr;
+		}
+
+		@Override
+		public String toString() {
+			if(expressions == null || expressions.size() == 0)
+				return "(SumLoopExpr " + expr.toString() + ")";
+			else {
+				String str = "";
+				for(int i = 0; i < expressions.size(); i++) {
+					str += " " + variables.get(i) + " " + expressions.get(i).toString();
+				}
+
+				return "(SumLoopExpr" + str + " " + expr.toString() + ")";
+			}
+		}
+	}
+
 	private static class IntType extends Type {
 
 		public IntType(int start_byte, int end_pos) {
@@ -703,6 +811,8 @@ class Parser {
 			return ((Lexer.KeywordToken)token).keyword.toLowerCase().equals(value.toLowerCase());
 		else if(type == Lexer.PunctuationToken.class)
 			return (((Lexer.PunctuationToken)token).character + "").equals(value);
+		else if(type == Lexer.OperatorToken.class)
+			return (((Lexer.OperatorToken)token).operator).equals(value);
 
 		return type.isInstance(token);
 	}
@@ -939,8 +1049,205 @@ class Parser {
 	 *  EXPRESSIONS
 	 */
 
+	private enum PrecedenceLevel {
+		// from highest to lowest precedence
+		NONE, INDEXING, UNARY, MULTIPLICATIVE, ADDITIVE, COMPARISON, BOOLEAN, PREFIX
+		// chain goes from right to left
+		// calls it and all to the left of it
+	}
+
 	private static Expr parse_expr(List<Lexer.Token> tokens, int pos) throws ParserException {
-		Expr expr;
+		return parse_expr(tokens, pos, PrecedenceLevel.PREFIX); // lowest precedence to get all of chain
+	}
+
+
+	// continuously parse at a precedence level
+	private static Expr parse_expr(List<Lexer.Token> tokens, int pos, PrecedenceLevel p) throws ParserException {
+		Expr expr = parse_expr_base(tokens, pos, p); // parse starting at base LL1
+
+		// throw it in until it's the same as last time
+		while(true) {
+			Expr expr_cont = parse_at_precedence(tokens, expr.end_pos, p, expr);
+			if(expr_cont.toString().equals(expr.toString()))
+				return expr;
+			expr = expr_cont;
+		}
+	}
+
+	private static Expr parse_at_precedence(List<Lexer.Token> tokens, int pos, PrecedenceLevel p, Expr expr) throws ParserException {
+		switch(p) {
+			case PREFIX -> { return parse_prefix(tokens, pos, expr); }
+			case BOOLEAN -> { return parse_boolean(tokens, pos, expr); }
+			case COMPARISON -> { return parse_comparison(tokens, pos, expr); }
+			case ADDITIVE -> { return parse_additive(tokens, pos, expr); }
+			case MULTIPLICATIVE -> { return parse_multiplicative(tokens, pos, expr); }
+			case UNARY -> { return parse_unary(tokens, pos, expr); }
+			case INDEXING -> { return parse_indexing(tokens, pos, expr); }
+			case NONE -> { return expr; }
+		}
+		throw new ParserException("Unknown parsing error");
+	}
+
+
+	private static Expr parse_prefix(List<Lexer.Token> tokens, int pos, Expr lhs) throws ParserException {
+		// start of chain (lowest precedence)
+		// In case I have to move if/array/sum exprs here
+		return parse_boolean(tokens, pos, lhs);
+	}
+
+	private static Expr parse_boolean(List<Lexer.Token> tokens, int pos, Expr lhs) throws ParserException {
+		// binary operators: && ||
+		if(lhs == null)
+			return parse_comparison(tokens, pos, null);
+
+		if(is_token(tokens, pos, Lexer.OperatorToken.class, "&&")) {
+			pos++;
+			Expr rhs = parse_expr(tokens, pos, PrecedenceLevel.COMPARISON);
+			return new BinopExpr(lhs.start_byte, rhs.end_pos, "&&", lhs, rhs);
+		}
+		else if(is_token(tokens, pos, Lexer.OperatorToken.class, "||")) {
+			pos++;
+			Expr rhs = parse_expr(tokens, pos, PrecedenceLevel.COMPARISON);
+			return new BinopExpr(lhs.start_byte, rhs.end_pos, "||", lhs, rhs);
+		}
+
+		return parse_comparison(tokens, pos, lhs);
+	}
+
+	private static Expr parse_comparison(List<Lexer.Token> tokens, int pos, Expr lhs) throws ParserException {
+		// binary operators: >, <, <=, >=, ==, !=
+		if(lhs == null)
+			return parse_additive(tokens, pos, null);
+
+		if(is_token(tokens, pos, Lexer.OperatorToken.class, ">")) {
+			pos++;
+			Expr rhs = parse_expr(tokens, pos, PrecedenceLevel.ADDITIVE);
+			return new BinopExpr(lhs.start_byte, rhs.end_pos, ">", lhs, rhs);
+		}
+		else if(is_token(tokens, pos, Lexer.OperatorToken.class, "<")) {
+			pos++;
+			Expr rhs = parse_expr(tokens, pos, PrecedenceLevel.ADDITIVE);
+			return new BinopExpr(lhs.start_byte, rhs.end_pos, "<", lhs, rhs);
+		}
+		else if(is_token(tokens, pos, Lexer.OperatorToken.class, "<=")) {
+			pos++;
+			Expr rhs = parse_expr(tokens, pos, PrecedenceLevel.ADDITIVE);
+			return new BinopExpr(lhs.start_byte, rhs.end_pos, "<=", lhs, rhs);
+		}
+		else if(is_token(tokens, pos, Lexer.OperatorToken.class, ">=")) {
+			pos++;
+			Expr rhs = parse_expr(tokens, pos, PrecedenceLevel.ADDITIVE);
+			return new BinopExpr(lhs.start_byte, rhs.end_pos, ">=", lhs, rhs);
+		}
+		else if(is_token(tokens, pos, Lexer.OperatorToken.class, "==")) {
+			pos++;
+			Expr rhs = parse_expr(tokens, pos, PrecedenceLevel.ADDITIVE);
+			return new BinopExpr(lhs.start_byte, rhs.end_pos, "==", lhs, rhs);
+		}
+		else if(is_token(tokens, pos, Lexer.OperatorToken.class, "!=")) {
+			pos++;
+			Expr rhs = parse_expr(tokens, pos, PrecedenceLevel.ADDITIVE);
+			return new BinopExpr(lhs.start_byte, rhs.end_pos, "!=", lhs, rhs);
+		}
+
+		return parse_additive(tokens, pos, lhs);
+	}
+
+	private static Expr parse_additive(List<Lexer.Token> tokens, int pos, Expr lhs) throws ParserException {
+		// binary operators: + -
+		if(lhs == null)
+			return parse_multiplicative(tokens, pos, null);
+
+		if(is_token(tokens, pos, Lexer.OperatorToken.class, "+")) {
+			pos++;
+			Expr rhs = parse_expr(tokens, pos, PrecedenceLevel.MULTIPLICATIVE);
+			return new BinopExpr(lhs.start_byte, rhs.end_pos, "+", lhs, rhs);
+		}
+		else if(is_token(tokens, pos, Lexer.OperatorToken.class, "-")) {
+			pos++;
+			Expr rhs = parse_expr(tokens, pos, PrecedenceLevel.MULTIPLICATIVE);
+			return new BinopExpr(lhs.start_byte, rhs.end_pos, "-", lhs, rhs);
+		}
+
+		return parse_multiplicative(tokens, pos, lhs);
+	}
+
+	private static Expr parse_multiplicative(List<Lexer.Token> tokens, int pos, Expr lhs) throws ParserException {
+		// operators: * / %
+		if(lhs == null)
+			return parse_unary(tokens, pos, null);
+
+		if(is_token(tokens, pos, Lexer.OperatorToken.class, "*")) {
+			pos++;
+			Expr rhs = parse_expr(tokens, pos, PrecedenceLevel.UNARY);
+			return new BinopExpr(lhs.start_byte, rhs.end_pos, "*", lhs, rhs);
+		}
+		else if(is_token(tokens, pos, Lexer.OperatorToken.class, "/")) {
+			pos++;
+			Expr rhs = parse_expr(tokens, pos, PrecedenceLevel.UNARY);
+			return new BinopExpr(lhs.start_byte, rhs.end_pos, "/", lhs, rhs);
+		}
+		else if(is_token(tokens, pos, Lexer.OperatorToken.class, "%")) {
+			pos++;
+			Expr rhs = parse_expr(tokens, pos, PrecedenceLevel.UNARY);
+			return new BinopExpr(lhs.start_byte, rhs.end_pos, "%", lhs, rhs);
+		}
+
+		return parse_unary(tokens, pos, lhs);
+	}
+
+	private static Expr parse_unary(List<Lexer.Token> tokens, int pos, Expr lhs) throws ParserException {
+		// In case I have to move !/- unary exprs here
+		// null is the special case for unary
+		/*
+		if(lhs == null && is_token(tokens, pos, Lexer.OperatorToken.class, "!")) {
+			pos++;
+			Expr rhs = parse_expr(tokens, pos, PrecedenceLevel.INDEXING);
+			return new UnopExpr(tokens.get(pos-1).start_byte, rhs.end_pos, "!", rhs);
+		}
+		else if(lhs == null && is_token(tokens, pos, Lexer.OperatorToken.class, "-")) {
+			pos++;
+			Expr rhs = parse_expr(tokens, pos, PrecedenceLevel.INDEXING);
+			return new UnopExpr(tokens.get(pos-1).start_byte, rhs.end_pos, "-", rhs);
+		}*/
+
+		return parse_indexing(tokens, pos, lhs);
+	}
+
+	private static Expr parse_indexing(List<Lexer.Token> tokens, int pos, Expr lhs) throws ParserException {
+		if(lhs == null)
+			return parse_expr_base(tokens, pos, PrecedenceLevel.NONE);
+
+		// <exp>.<variable>
+		if(is_token(tokens, pos, Lexer.PunctuationToken.class, ".")) {
+			pos++;
+			String identifier = expect_token(tokens, pos++, Lexer.IdentifierToken.class);
+			return new DotExpr(lhs.start_byte, pos, lhs, identifier);
+		}
+		// <expr> [<expr, ...]
+		else if(is_token(tokens, pos, Lexer.PunctuationToken.class, "[")) {
+			pos++;
+			List<Expr> expressions = parse_expr_chain(tokens, pos, "]");
+			int end_pos = expressions.size() > 0 ?
+					expressions.get(expressions.size() - 1).end_pos : pos;
+			end_pos++;
+			return new ArrayIndexExpr(lhs.start_byte, end_pos, lhs, expressions);
+		}
+
+		return lhs;
+	}
+
+	// starts at precedence p and goes to end, then restarts at the beginning.
+	// necessary because at the end of some precedence's operation (...) there may more of the same precedence
+	// or lower (x*y)+.. must check that it is same or higher before checking if lower.
+
+
+
+	// each precedence level is chained, i.e. prefix calls boolean which calls comparison ...
+	// get me the expression if its at precedence p or higher. I.e. ignore lower precedence levels
+	// lhs_orig is a value that came back like "2" or "true"
+	private static Expr parse_expr_base(List<Lexer.Token> tokens, int pos, PrecedenceLevel p) throws ParserException {
+		Expr expr; // lhs
 
 		if(is_token(tokens, pos, Lexer.IntToken.class))
 			expr = parse_intexpr(tokens, pos);
@@ -958,32 +1265,138 @@ class Parser {
 			expr = parse_arrayliteralexpr(tokens, pos);
 		else if(is_token(tokens, pos, Lexer.PunctuationToken.class, "("))
 			expr = parse_innerexpr(tokens, pos);
+		else if(is_token(tokens, pos, Lexer.KeywordToken.class, "if"))
+			expr = parse_ifexpr(tokens, pos);
+		else if(is_token(tokens, pos, Lexer.KeywordToken.class, "array"))
+			expr = parse_arrayloopexpr(tokens, pos);
+		else if(is_token(tokens, pos, Lexer.KeywordToken.class, "sum"))
+			expr = parse_sumloopexpr(tokens, pos);
+		else if(is_token(tokens, pos, Lexer.OperatorToken.class, "-"))
+			expr = parse_minus(tokens, pos);
+		else if(is_token(tokens, pos, Lexer.OperatorToken.class, "!"))
+			expr = parse_negate(tokens, pos);
 		else throw new ParserException("Expected expr at byte:" + tokens.get(pos).start_byte);
 
-		return parse_expr_cont(tokens, expr.end_pos, expr);
+		if(expr != null)
+			pos = expr.end_pos;
 
+		return parse_at_precedence(tokens, pos, p, expr);
 	}
 
-	private static Expr parse_expr_cont(List<Lexer.Token> tokens, int pos, Expr expr_orig) throws ParserException {
-		// <exp>.<variable>
-		if(is_token(tokens, pos, Lexer.PunctuationToken.class, ".")) {
-			pos++;
-			String identifier = expect_token(tokens, pos++, Lexer.IdentifierToken.class);
-			Expr new_orig = new DotExpr(expr_orig.start_byte, pos, expr_orig, identifier);
-			return parse_expr_cont(tokens, pos, new_orig);
-		}
-		// <expr> [<expr, ...]
-		else if(is_token(tokens, pos, Lexer.PunctuationToken.class, "[")) {
-			pos++;
-			List<Expr> expressions = parse_expr_chain(tokens, pos, "]");
-			int end_pos = expressions.size() > 0 ?
-					expressions.get(expressions.size() - 1).end_pos : pos;
-			end_pos++;
-			Expr new_orig = new ArrayIndexExpr(expr_orig.start_byte, end_pos, expr_orig, expressions);
-			return parse_expr_cont(tokens, end_pos, new_orig);
-		}
-		else return expr_orig;
+	private static Expr parse_minus(List<Lexer.Token> tokens, int pos) throws ParserException {
+		int start_pos = pos;
+		pos++; // was at '-' now one forward
+		Expr expr = parse_expr(tokens, pos, PrecedenceLevel.INDEXING);
+
+		//covert number here for some reason (was in the class compiler)
+		/*
+		var type = expr.getClass();
+		if(type == Parser.IntExpr.class) {
+			((IntExpr)expr).integer *= -1;
+			return expr;
+		}*/
+
+		return new UnopExpr(tokens.get(start_pos).start_byte, expr.end_pos, "-", expr);
 	}
+
+	private static Expr parse_negate(List<Lexer.Token> tokens, int pos) throws ParserException {
+		int start_pos = pos;
+		pos++; // was at '!' now one forward
+		Expr expr = parse_expr(tokens, pos, PrecedenceLevel.INDEXING);
+		return new UnopExpr(tokens.get(start_pos).start_byte, expr.end_pos, "!", expr);
+	}
+
+	private static Expr parse_ifexpr(List<Lexer.Token> tokens, int pos) throws ParserException {
+		int start_pos = pos;
+		expect_keyword(tokens, pos++, "if");
+		Expr expr1 = parse_expr(tokens, pos);
+		pos = expr1.end_pos;
+
+		expect_keyword(tokens, pos++, "then");
+		Expr expr2 = parse_expr(tokens, pos);
+		pos = expr2.end_pos;
+
+		expect_keyword(tokens, pos++, "else");
+		Expr expr3 = parse_expr(tokens, pos);
+		pos = expr3.end_pos;
+
+		return new IfExpr(tokens.get(start_pos).start_byte, pos, expr1, expr2, expr3);
+	}
+
+	private static Expr parse_arrayloopexpr(List<Lexer.Token> tokens, int pos) throws ParserException {
+		int start_pos = pos;
+		expect_keyword(tokens, pos++, "array");
+		expect_punctuation(tokens, pos++, '[');
+
+		List<String> variables = new ArrayList<>();
+		List<Expr> expressions = new ArrayList<>();
+
+		if(is_token(tokens, pos, Lexer.PunctuationToken.class, "]")) {
+			pos++;
+			Expr final_expr = parse_expr(tokens, pos);
+			pos = final_expr.end_pos;
+			return new ArrayLoopExpr(tokens.get(start_pos).start_byte, pos, variables, expressions, final_expr);
+		}
+
+		while(pos < tokens.size()) {
+			String var = expect_token(tokens, pos++, Lexer.IdentifierToken.class);
+			expect_punctuation(tokens, pos++, ':');
+			Expr expr = parse_expr(tokens, pos);
+			pos = expr.end_pos;
+
+			variables.add(var);
+			expressions.add(expr);
+
+			if(is_token(tokens, pos, Lexer.PunctuationToken.class, "]")) {
+				pos++;
+				Expr final_expr = parse_expr(tokens, pos);
+				pos = final_expr.end_pos;
+				return new ArrayLoopExpr(tokens.get(start_pos).start_byte, pos, variables, expressions, final_expr);
+			}
+			else
+				expect_punctuation(tokens, pos++, ',');
+		}
+
+		throw new ParserException("Expected closing brace at byte:" + tokens.get(pos).start_byte);
+	}
+
+	private static Expr parse_sumloopexpr(List<Lexer.Token> tokens, int pos) throws ParserException {
+		int start_pos = pos;
+		expect_keyword(tokens, pos++, "sum");
+		expect_punctuation(tokens, pos++, '[');
+
+		List<String> variables = new ArrayList<>();
+		List<Expr> expressions = new ArrayList<>();
+
+		if(is_token(tokens, pos, Lexer.PunctuationToken.class, "]")) {
+			pos++;
+			Expr final_expr = parse_expr(tokens, pos);
+			pos = final_expr.end_pos;
+			return new SumLoopExpr(tokens.get(start_pos).start_byte, pos, variables, expressions, final_expr);
+		}
+
+		while(pos < tokens.size()) {
+			String var = expect_token(tokens, pos++, Lexer.IdentifierToken.class);
+			expect_punctuation(tokens, pos++, ':');
+			Expr expr = parse_expr(tokens, pos);
+			pos = expr.end_pos;
+
+			variables.add(var);
+			expressions.add(expr);
+
+			if(is_token(tokens, pos, Lexer.PunctuationToken.class, "]")) {
+				pos++;
+				Expr final_expr = parse_expr(tokens, pos);
+				pos = final_expr.end_pos;
+				return new SumLoopExpr(tokens.get(start_pos).start_byte, pos, variables, expressions, final_expr);
+			}
+			else
+				expect_punctuation(tokens, pos++, ',');
+		}
+
+		throw new ParserException("Expected closing brace at byte:" + tokens.get(pos).start_byte);
+	}
+
 
 	private static List<Expr> parse_expr_chain(List<Lexer.Token> tokens, int pos, String closing_delimiter) throws ParserException {
 		// parses  <expr>, ... )  with any delimiter

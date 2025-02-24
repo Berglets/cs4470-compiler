@@ -1,11 +1,14 @@
 
+import jdk.jshell.spi.ExecutionControlProvider;
+
 import java.io.IOException;
+import java.lang.reflect.Array;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.sql.Struct;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 
 
@@ -49,8 +52,14 @@ public class compiler {
 				System.out.println(node.toString());
 			}
 		}
-/*
-		String jpl_code = "";
+		/*
+
+		String jpl_code = "struct foo {\n" +
+				"  a: int\n" +
+				"  a: float\n" +
+				"}\n" +
+				"\n" +
+				"show foo{1, 1.0}";
 		var output = Parser.parse_code( Lexer.Lex(jpl_code) );
 		TypeChecker.type_check(output);
 		for(var node : output) {
@@ -83,28 +92,157 @@ public class compiler {
 class TypeChecker {
 
 	// returns ctx
-	public static List<StructInfo> type_check(List<Parser.ASTNode> commands) throws TypeException {
-		List<StructInfo> ctx = new ArrayList<>();
-		ctx.add(StructInfo.GetRGBA()); // add rgba
+	public static Environment type_check(List<Parser.ASTNode> commands) throws TypeException {
 		try {
+			Environment env = create_start_environment();
 			for(Parser.ASTNode cmd : commands) {
-				if(cmd instanceof Parser.StructCmd) {
-					StructInfo struct_info = new StructInfo((Parser.StructCmd)cmd, ctx);
-					ctx.add(struct_info);
-				}
-				else if(cmd instanceof Parser.ShowCmd) {
-					type_of(((Parser.ShowCmd)cmd).expr, ctx);
-				}
-				else throw new TypeException("Command not found");
+				type_cmd(cmd, env);
 			}
-
-			return ctx;
+			return env;
 		}
-		catch (TypeException e) {
+		catch (Exception e) {
 			System.out.println("Compilation failed\n");
 			throw new TypeException("Caught Exception: " + e.toString());
 		}
 	}
+
+	private static Environment type_cmd(Parser.ASTNode cmd, Environment env) throws TypeException {
+
+		if(cmd instanceof Parser.StructCmd) {
+			new StructInfo((Parser.StructCmd)cmd, env); // adds itself into env
+		}
+		else if(cmd instanceof Parser.ShowCmd) {
+			type_of(((Parser.ShowCmd)cmd).expr, env); // puts TypeValue into expr recursively
+		}
+		else if(cmd instanceof Parser.LetCmd) {
+			Parser.LetCmd letcmd = (Parser.LetCmd)cmd;
+			TypeValue expr_type = type_of(letcmd.expr, env);
+			env.add_lvalue(letcmd.lvalue, expr_type);
+		}
+		else if(cmd instanceof Parser.WriteCmd) {
+			Parser.WriteCmd writecmd = (Parser.WriteCmd)cmd;
+			TypeValue tv = type_of(writecmd.expr, env);
+			// must be array rank 2 of rgba values
+			if(!(tv instanceof ArrayType))
+				throw new TypeException("Write command expression needs to be an array of rgba values rank 2");
+			ArrayType arr_type = (ArrayType)tv;
+			if(!(arr_type.inner_type instanceof StructType) || arr_type.rank != 2)
+				throw new TypeException("Write command expression needs to be an array of rgba values rank 2");
+			StructType inner_type = (StructType)arr_type.inner_type;
+			if(!inner_type.struct_name.equals("rgba"))
+				throw new TypeException("Write command expression needs to be an array of rgba values rank 2");
+		}
+		else if(cmd instanceof Parser.ReadCmd) {
+			Parser.ReadCmd readcmd = (Parser.ReadCmd)cmd;
+			StructType innerType = new StructType("rgba"); // type of array
+			ArrayType arr_type =  new ArrayType(2, innerType);
+			env.add_lvalue(readcmd.lvalue, arr_type);
+
+			//ValueInfo info = new ValueInfo(readcmd.lvalue.identifier, arr_type);
+			//env.add(readcmd.lvalue.identifier, info);
+		}
+		else if(cmd instanceof Parser.AssertCmd) {
+			Parser.AssertCmd assertcmd = (Parser.AssertCmd)cmd;
+			TypeValue tv = type_of(assertcmd.expr, env);
+			if(!tv.type_name.equals("BoolType"))
+				throw new TypeException("Assert condition must be a bool");
+		}
+		else if(cmd instanceof Parser.FnCmd) {
+			handle_fn_cmd((Parser.FnCmd)cmd, env);
+		}
+		else if(cmd instanceof Parser.TimeCmd) {
+			Parser.TimeCmd timecmd = (Parser.TimeCmd)cmd;
+			type_cmd(timecmd.cmd, env);
+		}
+		else if(cmd instanceof Parser.PrintCmd) {
+			// do nothing
+		}
+		else throw new TypeException("Command not found");
+
+
+		return env;
+	}
+
+	private static Environment create_start_environment() throws TypeException {
+		Environment env = new Environment();
+		// add rgba struct
+		env.add("rgba", StructInfo.GetRGBA());
+
+		// add built-in functions
+		env.add("sqrt", FunctionInfo.GetSqrt());
+		env.add("exp", FunctionInfo.GetExp());
+		env.add("sin", FunctionInfo.GetSin());
+		env.add("cos", FunctionInfo.GetCos());
+		env.add("tan", FunctionInfo.GetTan());
+		env.add("asin", FunctionInfo.GetAsin());
+		env.add("acos", FunctionInfo.GetAcos());
+		env.add("atan", FunctionInfo.GetATan());
+		env.add("log", FunctionInfo.GetLog());
+		env.add("pow", FunctionInfo.GetPow());
+		env.add("atan2", FunctionInfo.GetAtan2());
+		env.add("to_float", FunctionInfo.GetToFloat());
+		env.add("to_int", FunctionInfo.GetToInt());
+
+		// add built-in variables
+		env.add("args", new ValueInfo("args", new ArrayType(1, new TypeValue("IntType"))));
+		env.add("argnum", new ValueInfo("argnum", new TypeValue("IntType")));
+
+		return env;
+	}
+
+	private static Environment handle_fn_cmd(Parser.FnCmd cmd, Environment env) throws TypeException {
+		Environment child = new Environment();
+		child.parent = env;
+
+		// get argument types
+		List<TypeValue> arg_types = new ArrayList<>();
+		for(Parser.Binding bind : cmd.bindings) {
+			Parser.LValue lvalue = bind.lvalue;
+			Parser.Type p_type = bind.type;
+			TypeValue t_type = getType(p_type);
+			child.add_lvalue(lvalue, t_type);
+			arg_types.add(t_type);
+		}
+
+		// get return type
+		TypeValue ret_type = getType(cmd.return_value);
+
+		// construct FunctionInfo
+		FunctionInfo info = new FunctionInfo(cmd.identifier, ret_type, arg_types, child);
+		env.add(cmd.identifier, info);
+
+		// type check statements
+		return type_stmt(cmd.statements, child, ret_type);
+	}
+
+	private static Environment type_stmt(List<Parser.Stmt> statements, Environment env, TypeValue ret_type) throws TypeException {
+		boolean has_return = false;
+		for(Parser.Stmt stmt : statements) {
+			if (stmt instanceof Parser.LetStmt) {
+				Parser.LetStmt letstmt = (Parser.LetStmt)stmt;
+				TypeValue expr_type = type_of(letstmt.expr, env);
+				env.add_lvalue(letstmt.lvalue, expr_type);
+			} else if (stmt instanceof Parser.AssertStmt) {
+				Parser.AssertStmt assertstmt = (Parser.AssertStmt)stmt;
+				TypeValue tv = type_of(assertstmt.expr, env);
+				if(!tv.type_name.equals("BoolType"))
+					throw new TypeException("Assert condition must be a bool");
+			} else if (stmt instanceof Parser.ReturnStmt) {
+				has_return = true;
+				Parser.ReturnStmt returnstmt = (Parser.ReturnStmt)stmt;
+				TypeValue tv = type_of(returnstmt.expr, env);
+				if(!tv.toString().equals(ret_type.toString()))
+					throw new TypeException("Return type for function is incorrect");
+			}
+		}
+		if(!has_return && !ret_type.type_name.equals("VoidType"))
+			throw new TypeException("Return required of type " + ret_type.toString());
+
+
+		return env;
+	}
+
+
 
 
 	// NOTE: the way the code here is written makes it so that one TypeValue object may be shared
@@ -140,7 +278,7 @@ class TypeChecker {
 
 		public ArrayType(int rank, TypeValue inner_type) {
 			super("ArrayType");
-			this.rank = 1;
+			this.rank = rank;
 			this.inner_type = inner_type;
 		}
 
@@ -164,29 +302,113 @@ class TypeChecker {
 		}
 	}
 
-	private static class StructInfo {
+
+	public static class Environment {
+		private Environment parent;
+		private HashMap<String, NameInfo> ctx = new HashMap<>();
+
+		// checks this scope and all parent scopes. Throws error if name not in scope
+		public NameInfo lookup(String name) throws TypeException {
+			NameInfo info = lookup_internal(name);
+			if(info == null)
+				throw new TypeException("Symbol " + name + " is not in scope");
+			return info;
+		}
+
+		private NameInfo lookup_internal(String name) {
+			if(ctx.containsKey(name))
+				return ctx.get(name);
+
+			if(parent == null)
+				return null;
+
+			return parent.lookup_internal(name);
+		}
+
+		// add name to this context
+		public void add(String name, NameInfo info) throws TypeException {
+			// if name is already in scope
+			if(lookup_internal(name) != null)
+				throw new TypeException("Symbol " + name + " is already in use");
+
+			ctx.put(name, info);
+		}
+
+		// like lookup but does not throw
+		public boolean has(String name) {
+			NameInfo info = lookup_internal(name);
+			if(info == null)
+				return false;
+			else return true;
+		}
+
+		public void add_lvalue(Parser.LValue lvalue, TypeValue type) throws TypeException {
+			if(lvalue instanceof Parser.VarLValue) {
+				Parser.VarLValue varlvalue = (Parser.VarLValue)lvalue;
+				add(varlvalue.identifier, new ValueInfo(varlvalue.identifier, type));
+			}
+			else if(lvalue instanceof Parser.ArrayLValue) {
+				Parser.ArrayLValue arrlvalue = (Parser.ArrayLValue)lvalue;
+
+				// bind ints
+				ArrayType arr_type = (ArrayType)type;
+				if(arrlvalue.variables.size() != arr_type.rank)
+					throw new TypeException("cannot bind array to incorrect rank");
+				for(String str : arrlvalue.variables)
+					add(str, new ValueInfo(str, new TypeValue("IntType")));
+
+				// bind array's type
+				add(arrlvalue.identifier, new ValueInfo(arrlvalue.identifier, type));
+			}
+			else throw new TypeException("Unknown lvalue type");
+		}
+
+	}
+	public static class NameInfo {
 		String name;
+	}
+	public static class ValueInfo extends NameInfo {
+		TypeValue type;
+
+		public ValueInfo(String name, TypeValue type) {
+			this.name = name;
+			this.type = type;
+		}
+	}
+	public static class StructInfo extends NameInfo {
 		List<String> var_names;
 		List<TypeValue> types;
 
-		// does not add itself to context
-		public StructInfo(Parser.StructCmd struct_cmd, List<StructInfo> ctx) throws TypeException {
-			name = struct_cmd.identifier;
-			var_names = struct_cmd.variables;
+		private StructInfo(String name, List<String> var_names, List<TypeValue> types) {
+			this.name = name;
+			this.var_names = var_names;
+			this.types = types;
+		}
 
-			// make sure no duplicates
-			for(StructInfo info : ctx)
-				if(info.name.equals(this.name))
-					throw new TypeException("Duplicate structs named " + this.name);
+		public StructInfo(Parser.StructCmd struct_cmd, Environment env) throws TypeException {
+			this.name = struct_cmd.identifier;
+			this.var_names = struct_cmd.variables;
 
+			// make sure no duplicate var names
+			if(new HashSet<>(var_names).size() != var_names.size())
+				throw new TypeException("Struct has duplicate identifiers");
 
 			// make sure these inner types are in scope
 			for(Parser.Type t : struct_cmd.types) {
 				if(t instanceof Parser.StructType) {
-					String using_struct_name = ((Parser.StructType)t).struct_name;
 					// verify this struct name inside was already declared
-					if(!is_struct_in_context(using_struct_name, ctx))
-						throw new TypeException("Struct " + using_struct_name + " has not been declared");
+					String struct_name = ((Parser.StructType)t).struct_name;
+					if(!env.has(struct_name))
+						throw new TypeException("Struct " + struct_name + " has not been declared");
+				}
+				else if(t instanceof Parser.ArrayType) { // check same for arrays of structs
+					Parser.Type inner_type = ((Parser.ArrayType)t).type;
+					if(inner_type instanceof Parser.StructType) {
+						// verify this struct name inside was already declared
+						String struct_name = ((Parser.StructType)inner_type).struct_name;
+						if(!env.has(struct_name))
+							throw new TypeException("Struct " + struct_name + " has not been declared");
+					}
 				}
 			}
 
@@ -194,12 +416,9 @@ class TypeChecker {
 			types = new ArrayList<>();
 			for(Parser.Type t : struct_cmd.types)
 				types.add(getType(t));
-		}
 
-		private StructInfo(String name, List<String> var_names, List<TypeValue> types) {
-			this.name = name;
-			this.var_names = var_names;
-			this.types = types;
+			// checks for duplicate struct name and adds to environment
+			env.add(name, this);
 		}
 
 		public static StructInfo GetRGBA() {
@@ -218,6 +437,112 @@ class TypeChecker {
 		}
 
 	}
+	public static class FunctionInfo extends NameInfo {
+		TypeValue return_type;
+		List<TypeValue> argument_types;
+		Environment env;
+
+		public FunctionInfo(String name, TypeValue return_type, List<TypeValue> argument_types, Environment env) {
+			this.name = name;
+			this.return_type = return_type;
+			this.argument_types = argument_types;
+			this.env = env;
+		}
+
+		public static FunctionInfo GetSqrt() {
+			String name = "sqrt";
+			TypeValue return_type = new TypeValue("FloatType");
+			List<TypeValue> arg_types = new ArrayList<>();
+			arg_types.add(new TypeValue("FloatType"));
+			return new FunctionInfo(name, return_type, arg_types, null);
+		}
+		public static FunctionInfo GetExp() {
+			String name = "exp";
+			TypeValue return_type = new TypeValue("FloatType");
+			List<TypeValue> arg_types = new ArrayList<>();
+			arg_types.add(new TypeValue("FloatType"));
+			return new FunctionInfo(name, return_type, arg_types, null);
+		}
+		public static FunctionInfo GetSin() {
+			String name = "sin";
+			TypeValue return_type = new TypeValue("FloatType");
+			List<TypeValue> arg_types = new ArrayList<>();
+			arg_types.add(new TypeValue("FloatType"));
+			return new FunctionInfo(name, return_type, arg_types, null);
+		}
+		public static FunctionInfo GetCos() {
+			String name = "cos";
+			TypeValue return_type = new TypeValue("FloatType");
+			List<TypeValue> arg_types = new ArrayList<>();
+			arg_types.add(new TypeValue("FloatType"));
+			return new FunctionInfo(name, return_type, arg_types, null);
+		}
+		public static FunctionInfo GetTan() {
+			String name = "tan";
+			TypeValue return_type = new TypeValue("FloatType");
+			List<TypeValue> arg_types = new ArrayList<>();
+			arg_types.add(new TypeValue("FloatType"));
+			return new FunctionInfo(name, return_type, arg_types, null);
+		}
+		public static FunctionInfo GetAsin() {
+			String name = "asin";
+			TypeValue return_type = new TypeValue("FloatType");
+			List<TypeValue> arg_types = new ArrayList<>();
+			arg_types.add(new TypeValue("FloatType"));
+			return new FunctionInfo(name, return_type, arg_types, null);
+		}
+		public static FunctionInfo GetAcos() {
+			String name = "acos";
+			TypeValue return_type = new TypeValue("FloatType");
+			List<TypeValue> arg_types = new ArrayList<>();
+			arg_types.add(new TypeValue("FloatType"));
+			return new FunctionInfo(name, return_type, arg_types, null);
+		}
+		public static FunctionInfo GetATan() {
+			String name = "atan";
+			TypeValue return_type = new TypeValue("FloatType");
+			List<TypeValue> arg_types = new ArrayList<>();
+			arg_types.add(new TypeValue("FloatType"));
+			return new FunctionInfo(name, return_type, arg_types, null);
+		}
+		public static FunctionInfo GetLog() {
+			String name = "log";
+			TypeValue return_type = new TypeValue("FloatType");
+			List<TypeValue> arg_types = new ArrayList<>();
+			arg_types.add(new TypeValue("FloatType"));
+			return new FunctionInfo(name, return_type, arg_types, null);
+		}
+		public static FunctionInfo GetPow() {
+			String name = "pow";
+			TypeValue return_type = new TypeValue("FloatType");
+			List<TypeValue> arg_types = new ArrayList<>();
+			arg_types.add(new TypeValue("FloatType"));
+			arg_types.add(new TypeValue("FloatType"));
+			return new FunctionInfo(name, return_type, arg_types, null);
+		}
+		public static FunctionInfo GetAtan2() {
+			String name = "atan2";
+			TypeValue return_type = new TypeValue("FloatType");
+			List<TypeValue> arg_types = new ArrayList<>();
+			arg_types.add(new TypeValue("FloatType"));
+			arg_types.add(new TypeValue("FloatType"));
+			return new FunctionInfo(name, return_type, arg_types, null);
+		}
+		public static FunctionInfo GetToFloat() {
+			String name = "to_float";
+			TypeValue return_type = new TypeValue("FloatType");
+			List<TypeValue> arg_types = new ArrayList<>();
+			arg_types.add(new TypeValue("IntType"));
+			return new FunctionInfo(name, return_type, arg_types, null);
+		}
+		public static FunctionInfo GetToInt() {
+			String name = "to_int";
+			TypeValue return_type = new TypeValue("IntType");
+			List<TypeValue> arg_types = new ArrayList<>();
+			arg_types.add(new TypeValue("FloatType"));
+			return new FunctionInfo(name, return_type, arg_types, null);
+		}
+	}
 
 	// convert from parser type to TypeValue
 	private static TypeValue getType(Parser.Type type) throws TypeException {
@@ -233,28 +558,13 @@ class TypeChecker {
 			return new StructType(((Parser.StructType)type).struct_name);
 		else if(type instanceof Parser.ArrayType)
 			return new ArrayType(((Parser.ArrayType)type).dimension, getType(((Parser.ArrayType)type).type));
-		else throw new TypeException("Unkown type, uknown error");
+		else throw new TypeException("Unknown type, unknown error");
 	}
 
-	private static boolean is_struct_in_context(String struct_name, List<StructInfo> ctx) {
-		for(StructInfo info : ctx) {
-			if(info.name.equals(struct_name))
-				return true;
-		}
-		return false;
-	}
-
-	private static StructInfo getStructInfo(String struct_name, List<StructInfo> ctx) throws TypeException {
-		for(StructInfo info : ctx) {
-			if(info.name.equals(struct_name))
-				return info;
-		}
-		throw new TypeException("Struct " + struct_name + " has not been declared");
-	}
 
 
 	// puts expression's type inside expression. Returns that expression type
-	private static TypeValue type_of(Parser.Expr expr, List<StructInfo> ctx) throws TypeException {
+	private static TypeValue type_of(Parser.Expr expr, Environment env) throws TypeException {
 		TypeValue tv;
 		if(expr instanceof Parser.IntExpr)
 			tv = new TypeValue("IntType");
@@ -264,28 +574,36 @@ class TypeChecker {
 			tv = new TypeValue("BoolType");
 		else if(expr instanceof Parser.VoidExpr)
 			tv = new TypeValue("VoidType");
+		else if(expr instanceof Parser.VarExpr)
+			tv = type_check_varexpr((Parser.VarExpr)expr, env);
 		else if(expr instanceof Parser.UnopExpr)
-			tv = type_check_unary((Parser.UnopExpr)expr, ctx);
+			tv = type_check_unary((Parser.UnopExpr)expr, env);
 		else if(expr instanceof Parser.BinopExpr)
-			tv = type_check_binary((Parser.BinopExpr)expr, ctx);
+			tv = type_check_binary((Parser.BinopExpr)expr, env);
 		else if(expr instanceof Parser.StructLiteralExpr)
-			tv = type_check_struct((Parser.StructLiteralExpr)expr, ctx);
+			tv = type_check_struct((Parser.StructLiteralExpr)expr, env);
 		else if(expr instanceof Parser.ArrayLiteralExpr)
-			tv = type_check_array((Parser.ArrayLiteralExpr)expr, ctx);
+			tv = type_check_array((Parser.ArrayLiteralExpr)expr, env);
 		else if(expr instanceof Parser.IfExpr)
-			tv = type_check_ifexpr((Parser.IfExpr)expr, ctx);
+			tv = type_check_ifexpr((Parser.IfExpr)expr, env);
 		else if(expr instanceof Parser.DotExpr)
-			tv = type_check_dotexpr((Parser.DotExpr)expr, ctx);
+			tv = type_check_dotexpr((Parser.DotExpr)expr, env);
 		else if(expr instanceof Parser.ArrayIndexExpr)
-			tv = type_check_arrayindex((Parser.ArrayIndexExpr)expr, ctx);
+			tv = type_check_arrayindex((Parser.ArrayIndexExpr)expr, env);
+		else if(expr instanceof Parser.SumLoopExpr)
+			tv = type_check_sumloopexpr((Parser.SumLoopExpr)expr, env);
+		else if(expr instanceof Parser.ArrayLoopExpr)
+			tv = type_check_arrayloopexpr((Parser.ArrayLoopExpr)expr, env);
+		else if(expr instanceof Parser.CallExpr)
+			tv = type_check_callexpr((Parser.CallExpr)expr, env);
 		else throw new TypeException("Unknown Expression found when type checking");
 
 		expr.type = tv;
 		return tv;
 	}
 
-	private static TypeValue type_check_unary(Parser.UnopExpr unop, List<StructInfo> ctx) throws TypeException {
-		TypeValue unop_type = type_of(unop.expr, ctx);
+	private static TypeValue type_check_unary(Parser.UnopExpr unop, Environment env) throws TypeException {
+		TypeValue unop_type = type_of(unop.expr, env);
 		String type_name = unop_type.type_name;
 
 		if(unop.op.equals("!") && type_name.equals("BoolType"))
@@ -297,9 +615,9 @@ class TypeChecker {
 		else throw new TypeException("Incorrect type after " + unop.op + " at byte " + unop.start_byte);
 	}
 
-	private static TypeValue type_check_binary(Parser.BinopExpr binop, List<StructInfo> ctx) throws TypeException {
-		TypeValue t1 = type_of(binop.expr1, ctx);
-		TypeValue t2 = type_of(binop.expr2, ctx);
+	private static TypeValue type_check_binary(Parser.BinopExpr binop, Environment env) throws TypeException {
+		TypeValue t1 = type_of(binop.expr1, env);
+		TypeValue t2 = type_of(binop.expr2, env);
 
 		// make sure t1 and t2 are the same type
 		if(!t1.toString().equals(t2.toString()))
@@ -318,8 +636,8 @@ class TypeChecker {
 		else throw new TypeException("Incorrect types with " + binop.op + " expression at byte " + binop.start_byte);
 	}
 
-	private static StructType type_check_struct(Parser.StructLiteralExpr expr, List<StructInfo> ctx) throws TypeException {
-		StructInfo info = getStructInfo(expr.identifier, ctx);
+	private static StructType type_check_struct(Parser.StructLiteralExpr expr, Environment env) throws TypeException {
+		StructInfo info = (StructInfo)env.lookup(expr.identifier);
 
 		// check that the types/order are correct
 		if(info.types.size() != expr.expressions.size())
@@ -327,7 +645,7 @@ class TypeChecker {
 
 		for(int i = 0; i < info.types.size(); i++) {
 			Parser.Expr val = expr.expressions.get(i);
-			TypeValue actual_type = type_of(val, ctx);
+			TypeValue actual_type = type_of(val, env);
 			TypeValue required_type = info.types.get(i);
 
 			if(!actual_type.toString().equals(required_type.toString()))
@@ -337,15 +655,15 @@ class TypeChecker {
 		return new StructType(expr.identifier);
 	}
 
-	private static ArrayType type_check_array(Parser.ArrayLiteralExpr expr, List<StructInfo> ctx) throws TypeException {
+	private static ArrayType type_check_array(Parser.ArrayLiteralExpr expr, Environment env) throws TypeException {
 		// check for empty array constructor []
 		if(expr.exprs.size() == 0)
 			throw new TypeException("Empty array constructors are not allowed at " + expr.start_byte);
 
 		// check that the types are all the same
-		TypeValue type = type_of(expr.exprs.get(0), ctx);
+		TypeValue type = type_of(expr.exprs.get(0), env);
 		for(int i = 1; i < expr.exprs.size(); i++) {
-			TypeValue t = type_of(expr.exprs.get(i), ctx);
+			TypeValue t = type_of(expr.exprs.get(i), env);
 			if(!type.toString().equals(t.toString()))
 				throw new TypeException("Array literal types do not match at " + expr.start_byte);
 		}
@@ -353,27 +671,27 @@ class TypeChecker {
 		return new ArrayType(1, type);
 	}
 
-	private static TypeValue type_check_ifexpr(Parser.IfExpr expr, List<StructInfo> ctx) throws TypeException {
-		TypeValue condition_type = type_of(expr.expr1, ctx);
+	private static TypeValue type_check_ifexpr(Parser.IfExpr expr, Environment env) throws TypeException {
+		TypeValue condition_type = type_of(expr.expr1, env);
 		if(!condition_type.type_name.equals("BoolType"))
 			throw new TypeException("Bool condition required at " + expr.start_byte);
 
-		TypeValue then_type = type_of(expr.expr2, ctx);
-		TypeValue else_type = type_of(expr.expr3, ctx);
+		TypeValue then_type = type_of(expr.expr2, env);
+		TypeValue else_type = type_of(expr.expr3, env);
 		if(!then_type.toString().equals(else_type.toString()))
 			throw new TypeException("Then and Else types must match at " + expr.start_byte);
 
 		return then_type;
 	}
 
-	private static TypeValue type_check_dotexpr(Parser.DotExpr expr, List<StructInfo> ctx) throws TypeException {
-		TypeValue before_dot = type_of(expr.expr, ctx);
+	private static TypeValue type_check_dotexpr(Parser.DotExpr expr, Environment env) throws TypeException {
+		TypeValue before_dot = type_of(expr.expr, env);
 		if(!(before_dot instanceof StructType))
 			throw new TypeException("Dot expression must have Struct type before dot at " + expr.start_byte);
 
 		// get correct type for this
 		StructType st = (StructType)before_dot;
-		StructInfo info = getStructInfo(st.struct_name, ctx);
+		StructInfo info = (StructInfo)env.lookup(st.struct_name);
 
 		for(int i = 0; i < info.var_names.size(); i++) {
 			// if identifier is found in this struct info
@@ -386,23 +704,113 @@ class TypeChecker {
 
 	}
 
-	private static TypeValue type_check_arrayindex(Parser.ArrayIndexExpr expr, List<StructInfo> ctx) throws TypeException {
-		TypeValue to_index = type_of(expr.expr, ctx);
+	private static TypeValue type_check_arrayindex(Parser.ArrayIndexExpr expr, Environment env) throws TypeException {
+		TypeValue to_index = type_of(expr.expr, env);
 		if(!(to_index instanceof ArrayType))
 			throw new TypeException("Array index expression must have array type before at " + expr.start_byte);
 
 		// make sure 'rank' expressions are ints
 		for(Parser.Expr e : expr.expressions) {
-			TypeValue integer = type_of(e, ctx);
+			TypeValue integer = type_of(e, env);
 			if(!integer.type_name.equals("IntType"))
 				throw new TypeException("Array indexing can only use integers at " + expr.start_byte);
 		}
 
 		// get correct type for this
 		ArrayType at = (ArrayType) to_index;
+
+		// make sure rank of array is the same as # of indices in index
+		if(at.rank != expr.expressions.size())
+			throw new TypeException("Array expressions need the correct amount of indices");
+
 		return at.inner_type;
 	}
 
+	private static TypeValue type_check_varexpr(Parser.VarExpr expr, Environment env) throws TypeException {
+		ValueInfo info = (ValueInfo)env.lookup(expr.str);
+		return info.type;
+	}
+
+	private static TypeValue type_check_sumloopexpr(Parser.SumLoopExpr sum_expr, Environment env) throws TypeException {
+		if(sum_expr.expressions.size() == 0)
+			throw new TypeException("Sum loop Expressions must have bindings");
+
+		// loop bounds / bindings need to be integers
+		for(Parser.Expr expr : sum_expr.expressions) {
+			TypeValue tv = type_of(expr, env);
+			if(!tv.type_name.equals("IntType"))
+				throw new TypeException("Sum loop bindings must be integers");
+		}
+
+		// add variables to new environment
+		Environment child = new Environment();
+		child.parent = env;
+		for(int i = 0; i < sum_expr.variables.size(); i++) {
+			String name = sum_expr.variables.get(i);
+			TypeValue tv = sum_expr.expressions.get(i).type;
+			ValueInfo info = new ValueInfo(name, tv);
+			child.add(name, info);
+		}
+
+		TypeValue sum_body_type = type_of(sum_expr.expr, child);
+
+		// must be int or float
+		if(!(sum_body_type.type_name.equals("IntType") || sum_body_type.type_name.equals("FloatType")))
+			throw new TypeException("Sum loop body expression must evaluate to int or float");
+
+		return sum_body_type;
+	}
+
+	private static TypeValue type_check_arrayloopexpr(Parser.ArrayLoopExpr arr_expr, Environment env) throws TypeException {
+		if(arr_expr.expressions.size() == 0)
+			throw new TypeException("Array loop Expressions must have bindings");
+
+		// loop bounds / bindings need to be integers
+		for(Parser.Expr expr : arr_expr.expressions) {
+			TypeValue tv = type_of(expr, env);
+			if(!tv.type_name.equals("IntType"))
+				throw new TypeException("Array loop bindings must be integers");
+		}
+
+		// add variables to new environment
+		Environment child = new Environment();
+		child.parent = env;
+		for(int i = 0; i < arr_expr.variables.size(); i++) {
+			String name = arr_expr.variables.get(i);
+			TypeValue tv = arr_expr.expressions.get(i).type;
+			ValueInfo info = new ValueInfo(name, tv);
+			child.add(name, info);
+		}
+
+		TypeValue arr_inner_type = type_of(arr_expr.expr, child);
+		ArrayType arr_type = new ArrayType(arr_expr.variables.size(), arr_inner_type);
+		return arr_type;
+	}
+
+	private static TypeValue type_check_callexpr(Parser.CallExpr call_expr, Environment env) throws TypeException {
+		// type check all function arguments
+		List<TypeValue> parm_types = new ArrayList<>();
+		for(Parser.Expr expr : call_expr.expressions)
+			parm_types.add(type_of(expr, env));
+
+		// look up function name, check that it is a function type
+		NameInfo info = env.lookup(call_expr.identifier);
+		if(!(info instanceof FunctionInfo))
+			throw new TypeException("Using a non function to initiate a call expression");
+		FunctionInfo f_info = (FunctionInfo)info;
+
+		// verify argument types
+		if(f_info.argument_types.size() != parm_types.size())
+			throw new TypeException("Call expression arguments list does not match size of param list");
+		for(int i = 0; i < f_info.argument_types.size(); i++) {
+			TypeValue arg = f_info.argument_types.get(i);
+			TypeValue parm = parm_types.get(i);
+			if(!arg.toString().equals(parm.toString()))
+				throw new TypeException("Call expression arguments list does not match types of param list");
+		}
+
+		return f_info.return_type;
+	}
 
 
 
@@ -457,11 +865,11 @@ class Parser {
 		}
 	}
 	public static class Type extends ASTNode {}
-	private static class Stmt extends ASTNode {}
-	private static class LValue extends ASTNode {
-		String identifier;
+	public static class Stmt extends ASTNode {}
+	public static class LValue extends ASTNode {
+		public String identifier;
 	}
-	private static class Binding extends ASTNode{
+	public static class Binding extends ASTNode{
 		LValue lvalue;
 		Type type;
 
@@ -478,7 +886,7 @@ class Parser {
 		}
 	}
 
-	private static class VarLValue extends LValue {
+	public static class VarLValue extends LValue {
 		public VarLValue(int start_byte, int end_pos, String identifier) {
 			this.start_byte = start_byte;
 			this.end_pos = end_pos;
@@ -490,7 +898,7 @@ class Parser {
 			return "(VarLValue " + identifier + ")";
 		}
 	}
-	private static class ArrayLValue extends LValue {
+	public static class ArrayLValue extends LValue {
 		List<String> variables;
 
 		public ArrayLValue(int start_byte, int end_pos, String identifier, List<String> variables) {
@@ -510,7 +918,7 @@ class Parser {
 		}
 	}
 
-	private static class LetStmt extends Stmt {
+	public static class LetStmt extends Stmt {
 		LValue lvalue;
 		Expr expr;
 
@@ -526,7 +934,7 @@ class Parser {
 			return "(LetStmt " + lvalue.toString() + " " + expr.toString() + ")";
 		}
 	}
-	private static class AssertStmt extends Stmt {
+	public static class AssertStmt extends Stmt {
 		Expr expr;
 		String str;
 
@@ -542,7 +950,7 @@ class Parser {
 			return "(AssertStmt " + expr.toString() + " " + str + ")";
 		}
 	}
-	private static class ReturnStmt extends Stmt {
+	public static class ReturnStmt extends Stmt {
 		Expr expr;
 
 		public ReturnStmt(int start_byte, int end_pos, Expr expr) {
@@ -791,7 +1199,10 @@ class Parser {
 
 		@Override
 		public String toString() {
-			return "(VarExpr " + str + ")";
+			if(type != null)
+				return "(VarExpr " + type.toString() + " " + str + ")";
+			else
+				return "(VarExpr " + str + ")";
 		}
 	}
 	public static class ArrayLiteralExpr extends Expr {
@@ -908,13 +1319,13 @@ class Parser {
 		@Override
 		public String toString() {
 			if(expressions == null || expressions.size() == 0)
-				return "(CallExpr " + identifier + ")";
+				return "(CallExpr " + getType() + identifier + ")";
 			else {
 				String str = "";
 				for(Expr e : expressions)
 					str += " " + e.toString();
 
-				return "(CallExpr " + identifier + str + ")";
+				return "(CallExpr " + getType() + identifier + str + ")";
 			}
 		}
 	}
@@ -972,7 +1383,6 @@ class Parser {
 		}
 	}
 	public static class ArrayLoopExpr extends Expr {
-
 		List<String> variables;
 		List<Expr> expressions;
 		Expr expr;
@@ -988,14 +1398,18 @@ class Parser {
 		@Override
 		public String toString() {
 			if(expressions == null || expressions.size() == 0)
-				return "(ArrayLoopExpr " + expr.toString() + ")";
+				return "(ArrayLoopExpr " + getType() + expr.toString() + ")";
 			else {
 				String str = "";
 				for(int i = 0; i < expressions.size(); i++) {
 					str += " " + variables.get(i) + " " + expressions.get(i).toString();
 				}
-
-				return "(ArrayLoopExpr" + str + " " + expr.toString() + ")";
+				String t = getType();
+				if(!t.equals("")) {
+					t = t.substring(0, t.length() - 1); // remove extra space at the end
+					t = " " + t;
+				}
+				return "(ArrayLoopExpr" + t + str + " " + expr.toString() + ")";
 			}
 		}
 	}
@@ -1016,14 +1430,18 @@ class Parser {
 		@Override
 		public String toString() {
 			if(expressions == null || expressions.size() == 0)
-				return "(SumLoopExpr " + expr.toString() + ")";
+				return "(SumLoopExpr " + getType() + expr.toString() + ")";
 			else {
 				String str = "";
 				for(int i = 0; i < expressions.size(); i++) {
 					str += " " + variables.get(i) + " " + expressions.get(i).toString();
 				}
-
-				return "(SumLoopExpr" + str + " " + expr.toString() + ")";
+				String t = getType();
+				if(!t.equals("")) {
+					t = t.substring(0, t.length() - 1); // remove extra space at the end
+					t = " " + t;
+				}
+				return "(SumLoopExpr" + t + str + " " + expr.toString() + ")";
 			}
 		}
 	}

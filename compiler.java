@@ -1,15 +1,8 @@
-
-import jdk.jshell.spi.ExecutionControlProvider;
-
 import java.io.IOException;
-import java.lang.reflect.Array;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.List;
+import java.util.*;
 
 
 public class compiler {
@@ -45,27 +38,25 @@ public class compiler {
 				System.out.println(node.toString());
 			}
 		}
-		if(flag.equals("-t") || true) { // TODO remove true, temp for autograder
+		if(flag.equals("-t")) {
 			var output = Parser.parse_code( Lexer.Lex(jpl_code) );
 			TypeChecker.type_check(output);
 			for(var node : output) {
 				System.out.println(node.toString());
 			}
 		}
-		/*
+		if(flag.equals("-i") || true) { // TODO remove true, temp for autograder
+			var output = Parser.parse_code( Lexer.Lex(jpl_code) );
+			var env = TypeChecker.type_check(output);
+			System.out.println(C_Code.convert_to_c(output, env));
+		}
 
-		String jpl_code = "struct foo {\n" +
-				"  a: int\n" +
-				"  a: float\n" +
-				"}\n" +
-				"\n" +
-				"show foo{1, 1.0}";
+/*
+		String jpl_code = "show rgba{1.0, 1.0, 1.0, 1.0}";
 		var output = Parser.parse_code( Lexer.Lex(jpl_code) );
-		TypeChecker.type_check(output);
-		for(var node : output) {
-			System.out.println(node.toString());
-		}*/
-
+		var env = TypeChecker.type_check(output);
+		System.out.println(C_Code.convert_to_c(output, env));
+		*/
 
 		System.out.println("Compilation succeeded");
 	}
@@ -87,6 +78,426 @@ public class compiler {
 		return jpl_code;
 	}
 
+}
+
+class C_Code {
+
+	public static String convert_to_c(List<Parser.ASTNode> commands, TypeChecker.Environment env) throws C_Exception {
+		try {
+			C_Program program = new C_Program(env);
+			C_Fn jpl_main = new C_Fn("jpl_main", program);
+			jpl_main.Begin(commands);
+
+			String headers = "#include <math.h>\n" +
+					"#include <stdbool.h>\n" +
+					"#include <stdint.h>\n" +
+					"#include <stdio.h>\n" +
+					"#include \"rt/runtime.h\"\n" +
+					"\n" +
+					"typedef struct { } void_t;\n\n";
+
+			// gather struct code
+			String structs = "";
+			for (Map.Entry entry : program.structs.entrySet()) {
+				List<String> lines = (List<String>)entry.getValue();
+				for(String str : lines)
+					structs += str + "\n";
+				structs += "\n";
+			}
+
+			// gather function code
+			String functions = "";
+			program.functions.add(jpl_main); // only gets added at the end
+			for(C_Fn fn : program.functions) {
+				for(String line : fn.code) {
+					functions += line + "\n";
+				}
+				functions += "\n";
+			}
+
+			String output = headers + structs + functions.substring(0, functions.length()-1);
+			return output;
+		}
+		catch (Exception e) {
+			throw new C_Exception("Caught Exception: " + e.toString());
+		}
+	}
+
+	private static class C_Exception extends Exception {
+
+		private String msg = "Compilation failed\n";
+
+		public C_Exception(String msg) {
+			this.msg += "C conversion error: " + msg;
+		}
+
+		@Override
+		public String toString() {
+			return msg;
+		}
+	}
+
+	private static String indent = "    ";
+	private static String get_c_type(Parser.Expr expr) throws C_Exception {
+		if(expr.type instanceof TypeChecker.ArrayType) {
+			var arr_type = (TypeChecker.ArrayType)expr.type;
+
+			// encapsulate TypeValue by expr to recursively call get_c_type
+			Parser.Expr temp = new Parser.Expr();
+			temp.type = arr_type.inner_type;
+
+			return "_a" + arr_type.rank + "_" + get_c_type(temp);
+		} else {
+			return get_c_type(expr.type.type_name);
+		}
+	}
+	private static String get_c_type(String jpl_type) throws C_Exception {
+		switch(jpl_type) {
+			case "IntType": return "int64_t";
+			case "FloatType": return "double";
+			case "BoolType": return "bool";
+			case "VoidType": return "void_t";
+			default: throw new C_Exception("Type does not exist");
+		}
+	}
+
+
+	private static class C_Program {
+		List<C_Fn> functions = new ArrayList<>();
+		LinkedHashMap<String, List<String>> structs = new LinkedHashMap<>();
+		int jump_ctr = 1;
+		TypeChecker.Environment env;
+		HashMap<String, String> name_map = new HashMap<>(); // jpl var name to the c code var name
+
+
+		public C_Program(TypeChecker.Environment env) {
+			this.env = env;
+		}
+
+		public String add_struct(int rank, String c_type) {
+			String key = "_a" + rank + "_" + c_type;
+			if(structs.containsKey(key))
+				return key;
+
+			List<String> struct_code = new ArrayList<>();
+			struct_code.add("typedef struct {");
+			for(int i = 0; i < rank; i++)
+				struct_code.add(indent + "int64_t d" + i + ";");
+			struct_code.add(indent + c_type + " *data;");
+			struct_code.add("} " + key + ";");
+			structs.put(key, struct_code);
+			return key;
+		}
+
+		public String add_jump() {
+			return "_jump" + jump_ctr++;
+		}
+	}
+
+	private static class C_Fn {
+		String name;
+		C_Program parent;
+		List<String> code = new ArrayList<>();
+		int name_ctr = 0;
+		//TypeChecker.Environment env = new TypeChecker.Environment();
+
+
+		public C_Fn(String name, C_Program parent) {
+			this.name = name;
+			this.parent = parent;
+		}
+
+		public void Begin(List<Parser.ASTNode> commands) throws C_Exception {
+			code.add("void jpl_main(struct args args) {");
+			for(var cmd : commands) {
+				if(!(cmd instanceof Parser.Cmd)) throw new C_Exception("Unknown error: expected command");
+				cvt_cmd((Parser.Cmd)cmd);
+			}
+			code.add("}");
+		}
+
+		private void internal_begin() {
+			// for functions that can only do statements (not main function)
+		}
+
+		private String gensym() {
+			return "_" + name_ctr++;
+		}
+
+
+		/*
+			CONVERT COMMANDS
+		 */
+		private void cvt_cmd(Parser.Cmd cmd) throws C_Exception {
+			if(cmd instanceof Parser.ShowCmd)
+				cvt_cmd_show((Parser.ShowCmd)cmd);
+			else if(cmd instanceof Parser.LetCmd)
+				cvt_cmd_let((Parser.LetCmd)cmd);
+			else if(cmd instanceof Parser.AssertCmd)
+				cvt_cmd_assert((Parser.AssertCmd)cmd);
+			else if(cmd instanceof Parser.PrintCmd)
+				cvt_cmd_print((Parser.PrintCmd)cmd);
+			else if(cmd instanceof Parser.StructCmd)
+				cvt_cmd_struct((Parser.StructCmd)cmd);
+		}
+
+		private void cvt_cmd_show(Parser.ShowCmd cmd) throws C_Exception {
+			String c_name = cvt_expr(cmd.expr);
+
+			if(cmd.expr instanceof Parser.StructLiteralExpr) {
+				code.add(indent + "show(" + "\"" + build_tuple_type((Parser.StructLiteralExpr)cmd.expr) + "\", &" + c_name + ");");
+			} else {
+				code.add(indent + "show(" + "\"" + cmd.expr.type.toString() + "\", &" + c_name + ");");
+			}
+		}
+
+		private String build_tuple_type(Parser.StructLiteralExpr stlitexpr) {
+			String tuple_type = "(TupleType";
+			for(var expr : stlitexpr.expressions) {
+				if(expr instanceof Parser.StructLiteralExpr)
+					tuple_type += " " + build_tuple_type((Parser.StructLiteralExpr)expr);
+				else
+					tuple_type += " " + expr.type.toString();
+			}
+			tuple_type += ")";
+			return tuple_type;
+		}
+
+		private void cvt_cmd_let(Parser.LetCmd cmd) throws C_Exception {
+			String c_name = cvt_expr(cmd.expr);
+			if(cmd.lvalue instanceof Parser.ArrayLValue) {
+
+			} else {
+				parent.name_map.put(cmd.lvalue.identifier, c_name);
+			}
+		}
+
+		private void cvt_cmd_assert(Parser.AssertCmd cmd) throws C_Exception {
+			String c_name = cvt_expr(cmd.expr);
+			code.add(indent + "if (0 != " + c_name + ")");
+			String c_jump = parent.add_jump();
+			code.add(indent + "goto " + c_jump + ";");
+			code.add(indent + "fail_assertion(" + cmd.str + ");");
+			code.add(indent + c_jump + ":;");
+		}
+
+		private void cvt_cmd_print(Parser.PrintCmd cmd) {
+			code.add(indent + "print(" + cmd.str + ");");
+		}
+
+		private void cvt_cmd_struct(Parser.StructCmd cmd) throws C_Exception {
+			List<String> struct_code = new ArrayList<>();
+			struct_code.add("typedef struct {");
+			for(int i = 0; i < cmd.variables.size(); i++) {
+				String c_type = type_helper(cmd.types.get(i));
+				struct_code.add(indent + c_type + " " + cmd.variables.get(i) + ";");
+			}
+			struct_code.add("} " + cmd.identifier + ";");
+			parent.structs.put(cmd.identifier, struct_code);
+		}
+
+		// get c type from parser type
+		private String type_helper(Parser.Type type) throws C_Exception {
+			if(type instanceof Parser.IntType)
+				return "int64_t";
+			else if(type instanceof Parser.FloatType)
+				return "double";
+			else if(type instanceof Parser.BoolType)
+				return "bool";
+			else if(type instanceof Parser.VoidType)
+				return "void_t";
+			else if(type instanceof Parser.StructType)
+				return ((Parser.StructType)type).struct_name;
+			else if(type instanceof Parser.ArrayType) {
+				var arrType = (Parser.ArrayType)type;
+				String c_inner_type = type_helper(arrType.type); // get type for inner type
+				return parent.add_struct(arrType.dimension, c_inner_type);
+			}
+			else throw new C_Exception("Unknown exception: no such Parser.Type");
+		}
+
+
+
+		/*
+			CONVERT EXPRESSIONS. Each returns expression output variable name
+		 */
+		private String cvt_expr(Parser.Expr expr) throws C_Exception {
+			if(expr instanceof Parser.TrueExpr)
+				return cvt_expr_true((Parser.TrueExpr)expr);
+			else if(expr instanceof Parser.FalseExpr)
+				return cvt_expr_false((Parser.FalseExpr)expr);
+			else if(expr instanceof Parser.IntExpr)
+				return cvt_expr_int((Parser.IntExpr)expr);
+			else if(expr instanceof Parser.FloatExpr)
+				return cvt_expr_float((Parser.FloatExpr)expr);
+			else if(expr instanceof Parser.VoidExpr)
+				return cvt_expr_void((Parser.VoidExpr)expr);
+			else if(expr instanceof Parser.VarExpr)
+				return cvt_expr_var((Parser.VarExpr)expr);
+			else if(expr instanceof Parser.UnopExpr)
+				return cvt_expr_unop((Parser.UnopExpr)expr);
+			else if(expr instanceof Parser.BinopExpr)
+				return cvt_expr_binop((Parser.BinopExpr)expr);
+			else if(expr instanceof Parser.BinopExpr)
+				return cvt_expr_binop((Parser.BinopExpr)expr);
+			else if(expr instanceof Parser.StructLiteralExpr)
+				return cvt_expr_structliteral((Parser.StructLiteralExpr)expr);
+			else if(expr instanceof Parser.ArrayLiteralExpr)
+				return cvt_expr_arrayliteral((Parser.ArrayLiteralExpr)expr);
+			else if(expr instanceof Parser.DotExpr)
+				return cvt_expr_dot((Parser.DotExpr)expr);
+			else if(expr instanceof Parser.DotExpr)
+				return cvt_expr_dot((Parser.DotExpr)expr);
+			else if(expr instanceof Parser.ArrayIndexExpr)
+				return cvt_expr_arrayIndex((Parser.ArrayIndexExpr)expr);
+			else if(expr instanceof Parser.IfExpr)
+				return cvt_expr_if((Parser.IfExpr)expr);
+			else throw new C_Exception("Unknown exception: expression type not known");
+		}
+
+
+		private String cvt_expr_true(Parser.TrueExpr expr) {
+			String c_name = gensym();
+			code.add(indent + "bool " + c_name + " = true;");
+			return c_name;
+		}
+		private String cvt_expr_false(Parser.FalseExpr expr) {
+			String c_name = gensym();
+			code.add(indent + "bool " + c_name + " = false;");
+			return c_name;
+		}
+		private String cvt_expr_int(Parser.IntExpr expr) {
+			String c_name = gensym();
+			code.add(indent + "int64_t " + c_name + " = " + expr.integer + ";");
+			return c_name;
+		}
+		private String cvt_expr_float(Parser.FloatExpr expr) {
+			String c_name = gensym();
+			code.add(indent + "double " + c_name + " = " + (int)expr.float_val + ".0;"); // truncate to match autograder
+			return c_name;
+		}
+		private String cvt_expr_void(Parser.VoidExpr expr) {
+			String c_name = gensym();
+			code.add(indent + "void_t " + c_name + " = {};");
+			return c_name;
+		}
+		private String cvt_expr_var(Parser.VarExpr expr) {
+
+			return expr.str;
+		}
+		private String cvt_expr_unop(Parser.UnopExpr expr) throws C_Exception {
+			String c_name_inner = cvt_expr(expr.expr);
+			String c_name = gensym();
+			code.add(indent + get_c_type(expr) + " " + c_name + " = " + expr.op + c_name_inner + ";");
+			return c_name;
+		}
+		private String cvt_expr_binop(Parser.BinopExpr expr) throws C_Exception {
+			String c_name1 = cvt_expr(expr.expr1);
+			String c_name2 = cvt_expr(expr.expr2);
+			String c_name = gensym();
+			if(expr.type.type_name.equals("FloatType"))
+				code.add(indent + get_c_type(expr) + " " + c_name + " = fmod(" + c_name1 + ", " + c_name2 + ");");
+			else
+				code.add(indent + get_c_type(expr) + " " + c_name + " = " + c_name1 + " " + expr.op + " " + c_name2 + ";");
+			return c_name;
+		}
+		private String cvt_expr_structliteral(Parser.StructLiteralExpr expr) throws C_Exception {
+			List<String> c_names = new ArrayList<>();
+			for(Parser.Expr e :expr.expressions) {
+				c_names.add(cvt_expr(e));
+			}
+			String c_name = gensym();
+			String line = indent + expr.identifier + " " + c_name + " = { ";
+
+			for(String cn : c_names)
+				line += cn + ", ";
+
+			line = line.substring(0, line.length()-2);
+			code.add(line + " };");
+			return c_name;
+		}
+		private String cvt_expr_arrayliteral(Parser.ArrayLiteralExpr expr) throws C_Exception {
+			List<String> c_names = new ArrayList<>();
+			for(Parser.Expr e :expr.exprs) {
+				c_names.add(cvt_expr(e));
+			}
+			String c_name = gensym();
+
+			// put struct in code if it doesn't already exist
+			String c_type = get_c_type(expr.exprs.get(0));
+			String struct_name = parent.add_struct(1, c_type);
+
+			code.add(indent + struct_name + " " + c_name + ";");
+			code.add(indent + c_name + ".d0 = " + c_names.size() + ";");
+			code.add(indent + c_name + ".data = jpl_alloc(sizeof(" + c_type + ") * " + c_names.size() + ");");
+			for(int i = 0; i < c_names.size(); i++)
+				code.add(indent + c_name + ".data[" + i + "] = " + c_names.get(i) + ";");
+
+			return c_name;
+		}
+		private String cvt_expr_dot(Parser.DotExpr expr) throws C_Exception {
+			String c_name_inner = cvt_expr(expr.expr);
+			String c_name = gensym();
+
+			String c_type = get_c_type(expr.expr);
+			code.add(indent + c_type + " = " + c_name_inner + "." + expr.str + ";");
+			return c_name;
+		}
+		private String cvt_expr_arrayIndex(Parser.ArrayIndexExpr expr) throws C_Exception {
+			String c_name_outer = cvt_expr(expr.expr);
+			List<String> c_names = new ArrayList<>();
+			// convert inner expressions
+			for(var ie : expr.expressions) // seems to only let 1 index here in staff compiler
+				c_names.add(cvt_expr(ie));
+			String idx = c_names.get(0); // 1 index instead of all
+
+			code.add(indent + "if (" + idx + " >= 0)");
+			String c_jump = parent.add_jump();
+			code.add(indent + "goto " + c_jump + ";");
+			code.add(indent + "fail_assertion(\"negative array index\");");
+			code.add(indent + c_jump + ":;");
+
+			String jpl_c_name = parent.name_map.get(c_name_outer);
+			code.add(indent + "if (" + idx + " < " + jpl_c_name + ".d0)");
+			String c_jump2 = parent.add_jump();
+			code.add(indent + "goto " + c_jump2 + ";");
+			code.add(indent + "fail_assertion(\"index too large\");");
+			code.add(indent + c_jump2 + ":;");
+
+			String i_name = gensym();
+			code.add(indent + "int64_t " + i_name + " = 0;");
+			code.add(indent + i_name + " *= " + jpl_c_name + ".d0;");
+			code.add(indent + i_name + " += " + idx + ";");
+			String c_name = gensym();
+			code.add(indent + "int64_t " + c_name + " = " + jpl_c_name + ".data[" + i_name + "];");
+
+			return c_name;
+		}
+		private String cvt_expr_if(Parser.IfExpr expr) throws C_Exception {
+			String c_name1 = cvt_expr(expr.expr1);
+			String c_type = get_c_type(expr.expr2);
+			String c_name = gensym();
+
+			code.add(indent + c_type + " " + c_name + ";");
+			code.add(indent + "if (!" + c_name1 + ")");
+			String c_jump1 = parent.add_jump();
+			code.add(indent + "goto " + c_jump1 + ";");
+
+			String c_name2 = cvt_expr(expr.expr2);
+			code.add(indent + c_name + " = " + c_name2 + ";");
+			String c_jump2 = parent.add_jump();
+			code.add(indent + "goto " + c_jump2 + ";");
+
+			code.add(indent + c_jump1 + ":;");
+			String c_name3 = cvt_expr(expr.expr3);
+			code.add(indent + c_name + " = " + c_name3 + ";");
+
+			code.add(indent + c_jump2 + ":;");
+
+			return c_name;
+		}
+
+	}
 }
 
 class TypeChecker {
@@ -259,7 +670,7 @@ class TypeChecker {
 			return "(" + type_name + ")";
 		}
 	}
-	private static class StructType extends TypeValue {
+	public static class StructType extends TypeValue {
 		String struct_name;
 
 		public StructType(String struct_name) {
@@ -272,7 +683,7 @@ class TypeChecker {
 			return "(StructType " + struct_name + ")";
 		}
 	}
-	private static class ArrayType extends TypeValue {
+	static class ArrayType extends TypeValue {
 		int rank; // seems to always be 1
 		TypeValue inner_type;
 
@@ -853,7 +1264,7 @@ class Parser {
 		public int end_pos; // end position in list of tokens, important second-return
 	}
 
-	private static class Cmd extends ASTNode {}
+	public static class Cmd extends ASTNode {}
 	public static class Expr extends ASTNode {
 		TypeChecker.TypeValue type;
 

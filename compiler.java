@@ -52,15 +52,18 @@ public class compiler {
 		}
 
 /*
-		String jpl_code = "struct one {\n" +
-				"  a: int\n" +
-				"}\n" +
-				"struct three {\n" +
-				"  b: int\n" +
-				"  c: int\n" +
-				"  d: int\n" +
-				"}\n" +
-				"show if one{1}.a< three{0,1,2}.c then [1, 2, 3] else [4, 5, 6]";
+		String jpl_code = "show (93.93 < 80.89)\n" +
+				"\n" +
+				"let a = (5.39 > ([21.87][871] * 74.13))\n" +
+				"let b = [a]\n" +
+				"show b\n" +
+				"\n" +
+				"print \"c\"\n" +
+				"\n" +
+				"let c = ((- [83.33][(- 752)]) % [79.78][447])\n" +
+				"print \"d\"\n" +
+				"\n" +
+				"let d = ((rgba {c, 82.59, 94.9, c}.a % 23.12) < (39.61 - 63.33))";
 		var output = Parser.parse_code( Lexer.Lex(jpl_code) );
 		var env = TypeChecker.type_check(output);
 		System.out.println(C_Code.convert_to_c(output, env));
@@ -200,6 +203,13 @@ class C_Code {
 
 		public C_Program(TypeChecker.Environment env) {
 			this.env = env;
+
+			// add rbga struct
+			List<String> variables = Arrays.asList("r", "g", "b", "a");
+			Parser.Type floatType = new Parser.FloatType(0, 0);
+			List<Parser.Type> types = Arrays.asList(floatType, floatType, floatType, floatType);
+			Parser.StructCmd structCmd = new Parser.StructCmd(0, 0, "rgba", variables, types);
+			struct_more_info.put("rgba", structCmd);
 		}
 
 		public String add_struct(int rank, String c_type) {
@@ -427,6 +437,8 @@ class C_Code {
 				return cvt_expr_arrayIndex((Parser.ArrayIndexExpr)expr);
 			else if(expr instanceof Parser.IfExpr)
 				return cvt_expr_if((Parser.IfExpr)expr);
+			else if(expr instanceof Parser.CallExpr)
+				return cvt_expr_call((Parser.CallExpr)expr);
 			else throw new C_Exception("Unknown exception: expression type not known");
 		}
 
@@ -533,8 +545,7 @@ class C_Code {
 			code.add(indent + "fail_assertion(\"negative array index\");");
 			code.add(indent + c_jump + ":;");
 
-			String jpl_c_name = parent.name_map.get(c_name_outer);
-			code.add(indent + "if (" + idx + " < " + jpl_c_name + ".d0)");
+			code.add(indent + "if (" + idx + " < " + c_name_outer + ".d0)");
 			String c_jump2 = parent.add_jump();
 			code.add(indent + "goto " + c_jump2 + ";");
 			code.add(indent + "fail_assertion(\"index too large\");");
@@ -542,10 +553,11 @@ class C_Code {
 
 			String i_name = gensym();
 			code.add(indent + "int64_t " + i_name + " = 0;");
-			code.add(indent + i_name + " *= " + jpl_c_name + ".d0;");
+			code.add(indent + i_name + " *= " + c_name_outer + ".d0;");
 			code.add(indent + i_name + " += " + idx + ";");
 			String c_name = gensym();
-			code.add(indent + "int64_t " + c_name + " = " + jpl_c_name + ".data[" + i_name + "];");
+			String c_type = get_c_type(expr.type);
+			code.add(indent + c_type + " " + c_name + " = " + c_name_outer + ".data[" + i_name + "];");
 
 			return c_name;
 		}
@@ -570,6 +582,32 @@ class C_Code {
 
 			code.add(indent + c_jump2 + ":;");
 
+			return c_name;
+		}
+		private String cvt_expr_call(Parser.CallExpr expr) throws C_Exception {
+			List<String> c_names = new ArrayList<>();
+			for(var argument : expr.expressions)
+				c_names.add(cvt_expr(argument));
+
+			// need return type
+			String c_type;
+			try {
+				TypeChecker.FunctionInfo fi =(TypeChecker.FunctionInfo) parent.env.lookup(expr.identifier);
+				c_type =  get_c_type(fi.return_type);
+			}
+			catch(Exception e) {
+				throw new C_Exception(e.toString());
+			}
+
+			// generate c input string
+			String inputs = "";
+			for(String cn : c_names)
+				inputs += cn + ", ";
+			if(c_names.size() > 0)
+				inputs = inputs.substring(0, inputs.length()-2);
+
+			String c_name = gensym();
+			code.add(indent + c_type + " " + c_name + " = " + expr.identifier + "(" + inputs + ");" );
 			return c_name;
 		}
 

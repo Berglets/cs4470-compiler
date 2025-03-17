@@ -52,18 +52,7 @@ public class compiler {
 		}
 
 /*
-		String jpl_code = "show (93.93 < 80.89)\n" +
-				"\n" +
-				"let a = (5.39 > ([21.87][871] * 74.13))\n" +
-				"let b = [a]\n" +
-				"show b\n" +
-				"\n" +
-				"print \"c\"\n" +
-				"\n" +
-				"let c = ((- [83.33][(- 752)]) % [79.78][447])\n" +
-				"print \"d\"\n" +
-				"\n" +
-				"let d = ((rgba {c, 82.59, 94.9, c}.a % 23.12) < (39.61 - 63.33))";
+		String jpl_code = "show (1 < 0) && (0 < 1)";
 		var output = Parser.parse_code( Lexer.Lex(jpl_code) );
 		var env = TypeChecker.type_check(output);
 		System.out.println(C_Code.convert_to_c(output, env));
@@ -254,6 +243,19 @@ class C_Code {
 			code.add("}");
 		}
 
+		private void begin_not_main(List<Parser.Stmt> statements, boolean isVoid) throws C_Exception {
+			// statements
+			for(var stmt : statements) {
+				cvt_stmt(stmt);
+			}
+
+			if(isVoid) {
+				String c_name = gensym();
+				code.add(indent + "void_t " + c_name + " = {};" );
+				code.add(indent + "return " + c_name + ";");
+			}
+		}
+
 		private void internal_begin() {
 			// for functions that can only do statements (not main function)
 		}
@@ -277,6 +279,35 @@ class C_Code {
 				cvt_cmd_print((Parser.PrintCmd)cmd);
 			else if(cmd instanceof Parser.StructCmd)
 				cvt_cmd_struct((Parser.StructCmd)cmd);
+			else if(cmd instanceof Parser.FnCmd)
+				cvt_cmd_fn((Parser.FnCmd)cmd);
+			else if(cmd instanceof Parser.ReadCmd)
+				cvt_cmd_read((Parser.ReadCmd)cmd);
+			else if(cmd instanceof Parser.WriteCmd)
+				cvt_cmd_write((Parser.WriteCmd)cmd);
+			else if(cmd instanceof Parser.TimeCmd)
+				cvt_cmd_time((Parser.TimeCmd)cmd);
+		}
+
+		private void cvt_cmd_fn(Parser.FnCmd cmd) throws C_Exception {
+			// housekeeping
+			C_Fn new_fn = new C_Fn(cmd.identifier, parent);
+			parent.functions.add(new_fn);
+
+			// header
+			String c_type_return = type_helper(cmd.return_value);
+			String inputs = "";
+			for(var binding : cmd.bindings)
+				inputs += type_helper(binding.type) + " " + binding.lvalue.identifier + ", ";
+			if(cmd.bindings.size() > 0)
+				inputs = inputs.substring(0, inputs.length()-2);
+
+			new_fn.code.add(c_type_return + " " + cmd.identifier + "(" + inputs + ") {");
+
+			// statements and return
+			boolean isVoid = cmd.return_value.toString().equals("(VoidType)");
+			new_fn.begin_not_main(cmd.statements, isVoid);
+			new_fn.code.add("}");
 		}
 
 		private void cvt_cmd_let(Parser.LetCmd cmd) throws C_Exception {
@@ -397,10 +428,74 @@ class C_Code {
 			return output;
 		}
 
+		private void cvt_cmd_read(Parser.ReadCmd cmd) {
+			String c_name = gensym();
+			code.add(indent + "_a2_rgba " + c_name + " = read_image(" + cmd.read_file + ");");
 
+			// bind height + width (has to be 2 because image is 2d array)
+			if(cmd.lvalue instanceof Parser.ArrayLValue arrlval) {
+				for(int i = 0; i < arrlval.variables.size(); i++) {
+					String dim_name = arrlval.variables.get(i);
+					code.add(indent + "int64_t " + dim_name + " = " + c_name + ".d"+i);
+				}
+			}
+		}
 
+		private void cvt_cmd_write(Parser.WriteCmd cmd) throws C_Exception {
+			String c_name = cvt_expr(cmd.expr);
+			code.add(indent + "write_image( " + c_name + ", " + cmd.write_file + ");");
+		}
 
+		private void cvt_cmd_time(Parser.TimeCmd cmd) throws C_Exception {
+			String c_name1 = gensym();
+			code.add(indent + "double " + c_name1 + " = get_time();");
+			cvt_cmd(cmd.cmd);
+			String c_name2 = gensym();
+			code.add(indent + "double " + c_name2 + " = get_time();");
+			code.add(indent + "print_time(" + c_name2 + " - " + c_name1 + ");");
+		}
 
+		/*
+			CONVERT STATEMENTS
+		 */
+		private void cvt_stmt(Parser.Stmt stmt) throws C_Exception {
+			if(stmt instanceof Parser.LetStmt)
+				cvt_stmt_let((Parser.LetStmt)stmt);
+			else if(stmt instanceof Parser.AssertStmt)
+				cvt_stmt_assert((Parser.AssertStmt)stmt);
+			else if(stmt instanceof Parser.ReturnStmt)
+				cvt_stmt_return((Parser.ReturnStmt)stmt);
+			else throw new C_Exception("Unknown exception: statement type not known");
+		}
+
+		private void cvt_stmt_let(Parser.LetStmt stmt) throws C_Exception {
+			String c_name = cvt_expr(stmt.expr);
+
+			// save variable bindings
+			parent.name_map.put(stmt.lvalue.identifier, c_name); // might have to remove from parent map later
+
+			// save size binding (yes seem to only be able to be 1 dimension using 'let')
+			if(stmt.lvalue instanceof Parser.ArrayLValue) {
+				var arrlval = (Parser.ArrayLValue)stmt.lvalue;
+
+				for(int i = 0; i < arrlval.variables.size(); i++) {
+					String dim_name = arrlval.variables.get(i);
+					parent.name_map.put(dim_name, c_name+".d"+i);
+				}
+			}
+		}
+		private void cvt_stmt_assert(Parser.AssertStmt stmt) throws C_Exception {
+			String c_name = cvt_expr(stmt.expr);
+			code.add(indent + "if (0 != " + c_name + ")");
+			String c_jump = parent.add_jump();
+			code.add(indent + "goto " + c_jump + ";");
+			code.add(indent + "fail_assertion(" + stmt.str + ");");
+			code.add(indent + c_jump + ":;");
+		}
+		private void cvt_stmt_return(Parser.ReturnStmt stmt) throws C_Exception {
+			String c_name = cvt_expr(stmt.expr);
+			code.add(indent + "return " + c_name + ";");
+		}
 
 
 		/*
@@ -439,6 +534,10 @@ class C_Code {
 				return cvt_expr_if((Parser.IfExpr)expr);
 			else if(expr instanceof Parser.CallExpr)
 				return cvt_expr_call((Parser.CallExpr)expr);
+			else if(expr instanceof Parser.SumLoopExpr)
+				return cvt_expr_sumloop((Parser.SumLoopExpr)expr);
+			else if(expr instanceof Parser.ArrayLoopExpr)
+				return cvt_expr_arrayloop((Parser.ArrayLoopExpr)expr);
 			else throw new C_Exception("Unknown exception: expression type not known");
 		}
 
@@ -478,6 +577,11 @@ class C_Code {
 			return c_name;
 		}
 		private String cvt_expr_binop(Parser.BinopExpr expr) throws C_Exception {
+			if(expr.op.equals("&&"))
+				return cvt_expr_and(expr);
+			if(expr.op.equals("||"))
+				return cvt_expr_or(expr);
+
 			String c_name1 = cvt_expr(expr.expr1);
 			String c_name2 = cvt_expr(expr.expr2);
 			String c_name = gensym();
@@ -485,6 +589,32 @@ class C_Code {
 				code.add(indent + get_c_type(expr) + " " + c_name + " = fmod(" + c_name1 + ", " + c_name2 + ");");
 			else
 				code.add(indent + get_c_type(expr) + " " + c_name + " = " + c_name1 + " " + expr.op + " " + c_name2 + ";");
+			return c_name;
+		}
+		private String cvt_expr_and(Parser.BinopExpr expr) throws C_Exception {
+			String c_name = gensym();
+			String c_name1 = cvt_expr(expr.expr1);
+			code.add(indent + "bool " + c_name + " = " + c_name1 + ";");
+			code.add(indent + "if (0 == " + c_name1 + ")");
+			String jump = parent.add_jump();
+			code.add(indent + "goto " + jump + ";");
+
+			String c_name2 = cvt_expr(expr.expr2);
+			code.add(indent + c_name + " = " + c_name2 + ";");
+			code.add(indent + jump + ":;");
+			return c_name;
+		}
+		private String cvt_expr_or(Parser.BinopExpr expr) throws C_Exception {
+			String c_name = gensym();
+			String c_name1 = cvt_expr(expr.expr1);
+			code.add(indent + "bool " + c_name + " = " + c_name1 + ";");
+			code.add(indent + "if (0 != " + c_name1 + ")");
+			String jump = parent.add_jump();
+			code.add(indent + "goto " + jump + ";");
+
+			String c_name2 = cvt_expr(expr.expr2);
+			code.add(indent + c_name + " = " + c_name2 + ";");
+			code.add(indent + jump + ":;");
 			return c_name;
 		}
 		private String cvt_expr_structliteral(Parser.StructLiteralExpr expr) throws C_Exception {
@@ -610,7 +740,108 @@ class C_Code {
 			code.add(indent + c_type + " " + c_name + " = " + expr.identifier + "(" + inputs + ");" );
 			return c_name;
 		}
+		private String cvt_expr_sumloop(Parser.SumLoopExpr expr) throws C_Exception {
+			String c_name = gensym();
+			code.add(indent + "int64_t " + c_name + ";");
 
+			List<String> c_names = new ArrayList<>();
+			for(int i = 0; i < expr.variables.size(); i++) {
+				code.add(indent + "// Computing bound for " + expr.variables.get(i));
+				String c_namei = cvt_expr(expr.expressions.get(i));
+				c_names.add(c_namei);
+
+				code.add(indent + "if (" + c_namei + " > 0)");
+				String c_jump = parent.add_jump();
+				code.add(indent + "goto " + c_jump + ";");
+				code.add(indent + "fail_assertion(\"non-positive loop bound\");");
+				code.add(indent + c_jump + ":;");
+			}
+
+			code.add(indent + c_name + " = 0;");
+			LinkedList<String> c_varnames = new LinkedList<>();
+			for(int i = expr.variables.size()-1; i >= 0; i--) {
+				String c_varname = gensym();
+				c_varnames.addFirst(c_varname);
+				code.add(indent + "int64_t " + c_varname + " = 0; // " + expr.variables.get(i));
+			}
+			String c_jump_body = parent.add_jump();
+			code.add(indent + c_jump_body + ":; // Begin body of loop");
+
+			String body_c_name = cvt_expr(expr.expr);
+			code.add(indent + c_name + " += " + body_c_name + ";");
+
+			for(int i = expr.variables.size()-1; i >= 0; i--) {
+				code.add(indent + c_varnames.get(i) + "++;");
+				code.add(indent + "if (" + c_varnames.get(i) + " < " + c_names.get(i) + ")");
+				code.add(indent + "goto " + c_jump_body + ";");
+				code.add(indent + c_varnames.get(i) + " = 0;"); // remove this on last iteration
+			}
+			code.remove(code.size()-1);
+			code.add(indent + "// End body of loop");
+
+			return c_name;
+		}
+		private String cvt_expr_arrayloop(Parser.ArrayLoopExpr expr) throws C_Exception {
+			String c_name = gensym();
+			String c_type = get_c_type(expr.expr);
+			String st_name = parent.add_struct(expr.expressions.size(), c_type);
+
+			code.add(indent + st_name + " " + c_name + ";");
+
+			List<String> c_names = new ArrayList<>();
+			for(int i = 0; i < expr.variables.size(); i++) {
+				code.add(indent + "// Computing bound for " + expr.variables.get(i));
+				String c_namei = cvt_expr(expr.expressions.get(i));
+				c_names.add(c_namei);
+
+				code.add(indent + c_name + ".d" + i + " = " + c_namei + ";");
+				code.add(indent + "if (" + c_namei + " > 0)");
+				String c_jump = parent.add_jump();
+				code.add(indent + "goto " + c_jump + ";");
+				code.add(indent + "fail_assertion(\"non-positive loop bound\");");
+				code.add(indent + c_jump + ":;");
+			}
+
+			code.add(indent + "// Computing total size of heap memory to allocate");
+			String size_var = gensym();
+			code.add(indent + "int64_t " + size_var + " = 1;");
+			for(String cn : c_names) {
+				code.add(indent + size_var + " *= " + cn + ";");
+			}
+			code.add(indent + size_var + " *= sizeof(" + c_type + ");");
+			code.add(indent + c_name + ".data = jpl_alloc(" + size_var + ");");
+
+			LinkedList<String> c_varnames = new LinkedList<>();
+			for(int i = expr.variables.size()-1; i >= 0; i--) {
+				String c_varname = gensym();
+				c_varnames.addFirst(c_varname);
+				code.add(indent + "int64_t " + c_varname + " = 0; // " + expr.variables.get(i));
+			}
+			String c_jump_body = parent.add_jump();
+			code.add(indent + c_jump_body + ":; // Begin body of loop");
+
+			String body_c_name = cvt_expr(expr.expr);
+			String idx = gensym();
+			code.add(indent + "int64_t " + idx + " = 0;");
+			for(int i = 0; i < expr.variables.size(); i++) {
+				code.add(indent + idx + " *= " + c_name + ".d" + i + ";");
+				code.add(indent + idx + " += " + c_varnames.get(i) + ";");
+			}
+			code.add(indent + c_name + ".data[" + idx + "] = " + body_c_name + ";");
+
+
+			for(int i = expr.variables.size()-1; i >= 0; i--) {
+				code.add(indent + c_varnames.get(i) + "++;");
+				code.add(indent + "if (" + c_varnames.get(i) + " < " + c_names.get(i) + ")");
+				code.add(indent + "goto " + c_jump_body + ";");
+				code.add(indent + c_varnames.get(i) + " = 0;"); // remove this on last iteration
+			}
+			code.remove(code.size()-1);
+			code.add(indent + "// End body of loop");
+
+			return c_name;
+
+		}
 	}
 }
 

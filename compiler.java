@@ -7,7 +7,7 @@ import java.util.*;
 
 public class compiler {
 	public static void main(String[] args) throws Exception {
-/*
+
 		String filepath;
 		String flag = ""; // either -l or -p for now
 
@@ -50,8 +50,8 @@ public class compiler {
 			var env = TypeChecker.type_check(output);
 			System.out.println(C_Code.convert_to_c(output, env));
 		}
-*/
 
+/*
 		String jpl_code = "struct ipair {\n" +
 				"  x: int\n" +
 				"  y: int\n" +
@@ -69,7 +69,7 @@ public class compiler {
 		var output = Parser.parse_code( Lexer.Lex(jpl_code) );
 		var env = TypeChecker.type_check(output);
 		System.out.println(C_Code.convert_to_c(output, env));
-
+*/
 
 		System.out.println("Compilation succeeded");
 	}

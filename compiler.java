@@ -7,7 +7,7 @@ import java.util.*;
 
 public class compiler {
 	public static void main(String[] args) throws Exception {
-
+/*
 		String filepath;
 		String flag = ""; // either -l or -p for now
 
@@ -50,13 +50,26 @@ public class compiler {
 			var env = TypeChecker.type_check(output);
 			System.out.println(C_Code.convert_to_c(output, env));
 		}
+*/
 
-/*
-		String jpl_code = "show rgba{1.0, 1.0, 1.0, 1.0}";
+		String jpl_code = "struct ipair {\n" +
+				"  x: int\n" +
+				"  y: int\n" +
+				"}\n" +
+				"struct iapair {\n" +
+				"  left: int\n" +
+				"  right: int[]\n" +
+				"}\n" +
+				"struct outer {\n" +
+				"  fst: iapair\n" +
+				"  snd: ipair[]\n" +
+				"}\n" +
+				"let a = outer{ iapair{ 1, [2, 3] }, [ipair{4, 5}, ipair{6, 7}]}\n" +
+				"show a";
 		var output = Parser.parse_code( Lexer.Lex(jpl_code) );
 		var env = TypeChecker.type_check(output);
 		System.out.println(C_Code.convert_to_c(output, env));
-		*/
+
 
 		System.out.println("Compilation succeeded");
 	}
@@ -119,6 +132,7 @@ class C_Code {
 			return output;
 		}
 		catch (Exception e) {
+			System.out.println("Compilation failed\n");
 			throw new C_Exception("Caught Exception: " + e.toString());
 		}
 	}
@@ -147,6 +161,8 @@ class C_Code {
 			temp.type = arr_type.inner_type;
 
 			return "_a" + arr_type.rank + "_" + get_c_type(temp);
+		} else if(expr.type instanceof TypeChecker.StructType) {
+			return ((TypeChecker.StructType)expr.type).struct_name;
 		} else {
 			return get_c_type(expr.type.type_name);
 		}
@@ -168,6 +184,8 @@ class C_Code {
 		int jump_ctr = 1;
 		TypeChecker.Environment env;
 		HashMap<String, String> name_map = new HashMap<>(); // jpl var name to the c code var name
+		HashMap<String, Parser.Expr> expr_map = new HashMap(); // c code var name to the Expr object
+		HashMap<String, Parser.StructCmd> struct_more_info = new HashMap<String, Parser.StructCmd>(); // struct name to structcmd
 
 
 		public C_Program(TypeChecker.Environment env) {
@@ -241,34 +259,21 @@ class C_Code {
 				cvt_cmd_struct((Parser.StructCmd)cmd);
 		}
 
-		private void cvt_cmd_show(Parser.ShowCmd cmd) throws C_Exception {
-			String c_name = cvt_expr(cmd.expr);
-
-			if(cmd.expr instanceof Parser.StructLiteralExpr) {
-				code.add(indent + "show(" + "\"" + build_tuple_type((Parser.StructLiteralExpr)cmd.expr) + "\", &" + c_name + ");");
-			} else {
-				code.add(indent + "show(" + "\"" + cmd.expr.type.toString() + "\", &" + c_name + ");");
-			}
-		}
-
-		private String build_tuple_type(Parser.StructLiteralExpr stlitexpr) {
-			String tuple_type = "(TupleType";
-			for(var expr : stlitexpr.expressions) {
-				if(expr instanceof Parser.StructLiteralExpr)
-					tuple_type += " " + build_tuple_type((Parser.StructLiteralExpr)expr);
-				else
-					tuple_type += " " + expr.type.toString();
-			}
-			tuple_type += ")";
-			return tuple_type;
-		}
-
 		private void cvt_cmd_let(Parser.LetCmd cmd) throws C_Exception {
 			String c_name = cvt_expr(cmd.expr);
-			if(cmd.lvalue instanceof Parser.ArrayLValue) {
 
-			} else {
-				parent.name_map.put(cmd.lvalue.identifier, c_name);
+			// save variable bindings
+			parent.name_map.put(cmd.lvalue.identifier, c_name);
+			parent.expr_map.put(c_name, cmd.expr);
+
+			// save size binding (yes seem to only be able to be 1 dimension using 'let')
+			if(cmd.lvalue instanceof Parser.ArrayLValue) {
+				var arrlval = (Parser.ArrayLValue)cmd.lvalue;
+
+				for(int i = 0; i < arrlval.variables.size(); i++) {
+					String dim_name = arrlval.variables.get(i);
+					parent.name_map.put(dim_name, c_name+".d"+i);
+				}
 			}
 		}
 
@@ -286,6 +291,8 @@ class C_Code {
 		}
 
 		private void cvt_cmd_struct(Parser.StructCmd cmd) throws C_Exception {
+			parent.struct_more_info.put(cmd.identifier, cmd);
+
 			List<String> struct_code = new ArrayList<>();
 			struct_code.add("typedef struct {");
 			for(int i = 0; i < cmd.variables.size(); i++) {
@@ -315,6 +322,61 @@ class C_Code {
 			}
 			else throw new C_Exception("Unknown exception: no such Parser.Type");
 		}
+
+		private void cvt_cmd_show(Parser.ShowCmd cmd) throws C_Exception {
+			String c_name = cvt_expr(cmd.expr);
+
+			String tc_type = cmd.expr.type.toString();
+
+			for(int i = 0; i < 3; i++) {
+				tc_type = passover_replace(tc_type);
+			}
+
+			code.add(indent + "show(" + "\"" + tc_type + "\", &" + c_name + ");");
+		}
+
+		private String passover_replace(String tc_type) {
+			// find structs in string
+			List<String> struct_types = new ArrayList<>(); // structs to replace with TupleType: (StructType ipair)
+			List<String> structs  = new ArrayList<>(); // actual struct names: ipair
+
+			int from = 0;
+			while(from < tc_type.length()) {
+				int idx = tc_type.indexOf("(StructType ", from);
+				if(idx == -1)
+					break;
+				else { // found structtype...
+					String sub = tc_type.substring(idx, tc_type.indexOf(")", idx) + 1);
+					struct_types.add(sub);
+					from = idx + 5;
+				}
+			}
+
+			for(String s : struct_types)
+				structs.add(s.substring(12, s.length()-1));
+
+			// create replacements
+			List<String> replacements = new ArrayList<>();
+			for(int i = 0; i < structs.size(); i++) {
+				String str = "(TupleType";
+				Parser.StructCmd struct_cmd = parent.struct_more_info.get(structs.get(i));
+				for(Parser.Type inner : struct_cmd.types)
+					str += " " + inner.toString(); // (IntType)
+				str += ")";
+				replacements.add(str);
+			}
+
+			// replace
+			String output = tc_type;
+			for(int i = 0; i < structs.size(); i++) {
+				output = output.replace(struct_types.get(i), replacements.get(i));
+			}
+			return output;
+		}
+
+
+
+
 
 
 
@@ -382,8 +444,7 @@ class C_Code {
 			return c_name;
 		}
 		private String cvt_expr_var(Parser.VarExpr expr) {
-
-			return expr.str;
+			return parent.name_map.get(expr.str);
 		}
 		private String cvt_expr_unop(Parser.UnopExpr expr) throws C_Exception {
 			String c_name_inner = cvt_expr(expr.expr);
@@ -395,7 +456,7 @@ class C_Code {
 			String c_name1 = cvt_expr(expr.expr1);
 			String c_name2 = cvt_expr(expr.expr2);
 			String c_name = gensym();
-			if(expr.type.type_name.equals("FloatType"))
+			if(expr.op.equals("%") && expr.type.type_name.equals("FloatType"))
 				code.add(indent + get_c_type(expr) + " " + c_name + " = fmod(" + c_name1 + ", " + c_name2 + ");");
 			else
 				code.add(indent + get_c_type(expr) + " " + c_name + " = " + c_name1 + " " + expr.op + " " + c_name2 + ";");
@@ -683,7 +744,7 @@ class TypeChecker {
 			return "(StructType " + struct_name + ")";
 		}
 	}
-	static class ArrayType extends TypeValue {
+	public static class ArrayType extends TypeValue {
 		int rank; // seems to always be 1
 		TypeValue inner_type;
 

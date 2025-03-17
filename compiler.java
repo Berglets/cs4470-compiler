@@ -52,20 +52,15 @@ public class compiler {
 		}
 
 /*
-		String jpl_code = "struct ipair {\n" +
-				"  x: int\n" +
-				"  y: int\n" +
+		String jpl_code = "struct one {\n" +
+				"  a: int\n" +
 				"}\n" +
-				"struct iapair {\n" +
-				"  left: int\n" +
-				"  right: int[]\n" +
+				"struct three {\n" +
+				"  b: int\n" +
+				"  c: int\n" +
+				"  d: int\n" +
 				"}\n" +
-				"struct outer {\n" +
-				"  fst: iapair\n" +
-				"  snd: ipair[]\n" +
-				"}\n" +
-				"let a = outer{ iapair{ 1, [2, 3] }, [ipair{4, 5}, ipair{6, 7}]}\n" +
-				"show a";
+				"show if one{1}.a< three{0,1,2}.c then [1, 2, 3] else [4, 5, 6]";
 		var output = Parser.parse_code( Lexer.Lex(jpl_code) );
 		var env = TypeChecker.type_check(output);
 		System.out.println(C_Code.convert_to_c(output, env));
@@ -152,6 +147,21 @@ class C_Code {
 	}
 
 	private static String indent = "    ";
+	private static String get_c_type(TypeChecker.TypeValue type) throws C_Exception {
+		if(type instanceof TypeChecker.ArrayType) {
+			var arr_type = (TypeChecker.ArrayType)type;
+
+			// encapsulate TypeValue by expr to recursively call get_c_type
+			Parser.Expr temp = new Parser.Expr();
+			temp.type = arr_type.inner_type;
+
+			return "_a" + arr_type.rank + "_" + get_c_type(temp);
+		} else if(type instanceof TypeChecker.StructType) {
+			return ((TypeChecker.StructType)type).struct_name;
+		} else {
+			return get_c_type(type.type_name);
+		}
+	}
 	private static String get_c_type(Parser.Expr expr) throws C_Exception {
 		if(expr.type instanceof TypeChecker.ArrayType) {
 			var arr_type = (TypeChecker.ArrayType)expr.type;
@@ -362,7 +372,10 @@ class C_Code {
 				Parser.StructCmd struct_cmd = parent.struct_more_info.get(structs.get(i));
 				for(Parser.Type inner : struct_cmd.types)
 					str += " " + inner.toString(); // (IntType)
-				str += ")";
+				if(struct_cmd.types.size() > 0)
+					str += ")";
+				else
+					str += " )";
 				replacements.add(str);
 			}
 
@@ -473,7 +486,8 @@ class C_Code {
 			for(String cn : c_names)
 				line += cn + ", ";
 
-			line = line.substring(0, line.length()-2);
+			if(c_names.size() > 0)
+				line = line.substring(0, line.length()-2);
 			code.add(line + " };");
 			return c_name;
 		}
@@ -500,8 +514,9 @@ class C_Code {
 			String c_name_inner = cvt_expr(expr.expr);
 			String c_name = gensym();
 
-			String c_type = get_c_type(expr.expr);
-			code.add(indent + c_type + " = " + c_name_inner + "." + expr.str + ";");
+			//parent.struct_more_info.get()
+			String c_type = get_c_type(expr.type);
+			code.add(indent + c_type + " " + c_name + " = " + c_name_inner + "." + expr.str + ";");
 			return c_name;
 		}
 		private String cvt_expr_arrayIndex(Parser.ArrayIndexExpr expr) throws C_Exception {

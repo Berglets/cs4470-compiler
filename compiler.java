@@ -50,9 +50,9 @@ public class compiler {
 			var env = TypeChecker.type_check(output);
 			System.out.println(C_Code.convert_to_c(output, env));
 		}
-/*
 
-		String jpl_code = "show sum[i : 10] 1.0";
+/*
+		String jpl_code = "show args";
 		var output = Parser.parse_code( Lexer.Lex(jpl_code) );
 		var env = TypeChecker.type_check(output);
 		System.out.println(C_Code.convert_to_c(output, env));
@@ -236,6 +236,8 @@ class C_Code {
 
 		public void Begin(List<Parser.ASTNode> commands) throws C_Exception {
 			code.add("void jpl_main(struct args args) {");
+			parent.name_map.put("args","args");
+			parent.name_map.put("argnum","args.d0");
 			for(var cmd : commands) {
 				if(!(cmd instanceof Parser.Cmd)) throw new C_Exception("Unknown error: expected command");
 				cvt_cmd((Parser.Cmd)cmd);
@@ -290,15 +292,24 @@ class C_Code {
 		}
 
 		private void cvt_cmd_fn(Parser.FnCmd cmd) throws C_Exception {
-			// housekeeping
 			C_Fn new_fn = new C_Fn(cmd.identifier, parent);
 			parent.functions.add(new_fn);
 
 			// header
 			String c_type_return = type_helper(cmd.return_value);
 			String inputs = "";
-			for(var binding : cmd.bindings)
+			for(var binding : cmd.bindings) {
 				inputs += type_helper(binding.type) + " " + binding.lvalue.identifier + ", ";
+				// save arg bindings
+				parent.name_map.put(binding.lvalue.identifier, binding.lvalue.identifier);
+				// save size binding (yes seem to only be able to be 1 dimension using 'let')
+				if(binding.lvalue instanceof Parser.ArrayLValue blv) {
+					for(int i = 0; i < blv.variables.size(); i++) {
+						String dim_name = blv.variables.get(i);
+						parent.name_map.put(dim_name, binding.lvalue.identifier+".d"+i);
+					}
+				}
+			}
 			if(cmd.bindings.size() > 0)
 				inputs = inputs.substring(0, inputs.length()-2);
 

@@ -52,7 +52,7 @@ public class compiler {
 		}
 
 /*
-		String jpl_code = "show (1 < 0) && (0 < 1)";
+		String jpl_code = "show sum[i: 5] i";
 		var output = Parser.parse_code( Lexer.Lex(jpl_code) );
 		var env = TypeChecker.type_check(output);
 		System.out.println(C_Code.convert_to_c(output, env));
@@ -432,11 +432,16 @@ class C_Code {
 			String c_name = gensym();
 			code.add(indent + "_a2_rgba " + c_name + " = read_image(" + cmd.read_file + ");");
 
+			// save variable bindings
+			parent.name_map.put(cmd.lvalue.identifier, c_name);
+
 			// bind height + width (has to be 2 because image is 2d array)
 			if(cmd.lvalue instanceof Parser.ArrayLValue arrlval) {
 				for(int i = 0; i < arrlval.variables.size(); i++) {
 					String dim_name = arrlval.variables.get(i);
 					code.add(indent + "int64_t " + dim_name + " = " + c_name + ".d"+i);
+					// save size bindings
+					parent.name_map.put(dim_name, c_name+".d"+i);
 				}
 			}
 		}
@@ -763,6 +768,10 @@ class C_Code {
 				String c_varname = gensym();
 				c_varnames.addFirst(c_varname);
 				code.add(indent + "int64_t " + c_varname + " = 0; // " + expr.variables.get(i));
+
+				// save variable bindings
+				parent.name_map.put(expr.variables.get(i), c_varname);
+				parent.expr_map.put(c_varname, expr.expressions.get(i));
 			}
 			String c_jump_body = parent.add_jump();
 			code.add(indent + c_jump_body + ":; // Begin body of loop");
@@ -816,6 +825,10 @@ class C_Code {
 				String c_varname = gensym();
 				c_varnames.addFirst(c_varname);
 				code.add(indent + "int64_t " + c_varname + " = 0; // " + expr.variables.get(i));
+
+				// save variable bindings
+				parent.name_map.put(expr.variables.get(i), c_varname);
+				parent.expr_map.put(c_varname, expr.expressions.get(i));
 			}
 			String c_jump_body = parent.add_jump();
 			code.add(indent + c_jump_body + ":; // Begin body of loop");

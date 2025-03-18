@@ -57,9 +57,9 @@ public class compiler {
 		var env = TypeChecker.type_check(output);
 		System.out.println(C_Code.convert_to_c(output, env));
 
-
+*/
 		System.out.println("Compilation succeeded");
-	}*/
+	}
 
 	public static String getFileContents(String filepath) throws Exception {
 		//String currentWorkingDirectory = System.getProperty("user.dir");

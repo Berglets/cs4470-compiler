@@ -50,9 +50,9 @@ public class compiler {
 			var env = TypeChecker.type_check(output);
 			System.out.println(C_Code.convert_to_c(output, env));
 		}
-
 /*
-		String jpl_code = "show sum[i: 5] i";
+
+		String jpl_code = "show sum[i : 10] 1.0";
 		var output = Parser.parse_code( Lexer.Lex(jpl_code) );
 		var env = TypeChecker.type_check(output);
 		System.out.println(C_Code.convert_to_c(output, env));
@@ -439,7 +439,7 @@ class C_Code {
 			if(cmd.lvalue instanceof Parser.ArrayLValue arrlval) {
 				for(int i = 0; i < arrlval.variables.size(); i++) {
 					String dim_name = arrlval.variables.get(i);
-					code.add(indent + "int64_t " + dim_name + " = " + c_name + ".d"+i);
+					code.add(indent + "int64_t " + dim_name + " = " + c_name + ".d"+i + ";");
 					// save size bindings
 					parent.name_map.put(dim_name, c_name+".d"+i);
 				}
@@ -672,24 +672,28 @@ class C_Code {
 			// convert inner expressions
 			for(var ie : expr.expressions) // seems to only let 1 index here in staff compiler
 				c_names.add(cvt_expr(ie));
-			String idx = c_names.get(0); // 1 index instead of all
 
-			code.add(indent + "if (" + idx + " >= 0)");
-			String c_jump = parent.add_jump();
-			code.add(indent + "goto " + c_jump + ";");
-			code.add(indent + "fail_assertion(\"negative array index\");");
-			code.add(indent + c_jump + ":;");
+			for(int i = 0; i < c_names.size(); i++) {
+				code.add(indent + "if (" + c_names.get(i) + " >= 0)");
+				String c_jump = parent.add_jump();
+				code.add(indent + "goto " + c_jump + ";");
+				code.add(indent + "fail_assertion(\"negative array index\");");
+				code.add(indent + c_jump + ":;");
 
-			code.add(indent + "if (" + idx + " < " + c_name_outer + ".d0)");
-			String c_jump2 = parent.add_jump();
-			code.add(indent + "goto " + c_jump2 + ";");
-			code.add(indent + "fail_assertion(\"index too large\");");
-			code.add(indent + c_jump2 + ":;");
+				code.add(indent + "if (" + c_names.get(i) + " < " + c_name_outer + ".d" + i + ")");
+				String c_jump2 = parent.add_jump();
+				code.add(indent + "goto " + c_jump2 + ";");
+				code.add(indent + "fail_assertion(\"index too large\");");
+				code.add(indent + c_jump2 + ":;");
+			}
 
 			String i_name = gensym();
 			code.add(indent + "int64_t " + i_name + " = 0;");
-			code.add(indent + i_name + " *= " + c_name_outer + ".d0;");
-			code.add(indent + i_name + " += " + idx + ";");
+			for(int i = 0; i < c_names.size(); i++) {
+				code.add(indent + i_name + " *= " + c_name_outer + ".d" + i + ";");
+				code.add(indent + i_name + " += " + c_names.get(i) + ";");
+			}
+
 			String c_name = gensym();
 			String c_type = get_c_type(expr.type);
 			code.add(indent + c_type + " " + c_name + " = " + c_name_outer + ".data[" + i_name + "];");
@@ -747,7 +751,8 @@ class C_Code {
 		}
 		private String cvt_expr_sumloop(Parser.SumLoopExpr expr) throws C_Exception {
 			String c_name = gensym();
-			code.add(indent + "int64_t " + c_name + ";");
+			String c_type = get_c_type(expr.expr);
+			code.add(indent + c_type + " " + c_name + ";");
 
 			List<String> c_names = new ArrayList<>();
 			for(int i = 0; i < expr.variables.size(); i++) {

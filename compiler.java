@@ -52,7 +52,11 @@ public class compiler {
 		}
 
 /*
-		String jpl_code = "show args";
+		String jpl_code = "read image \"a.png\" to x[W, H]\n" +
+				"fn f(d : int) : int {\n" +
+				"   return W * H + d\n" +
+				"}\n" +
+				"show f(13)";
 		var output = Parser.parse_code( Lexer.Lex(jpl_code) );
 		var env = TypeChecker.type_check(output);
 		System.out.println(C_Code.convert_to_c(output, env));
@@ -226,6 +230,7 @@ class C_Code {
 		C_Program parent;
 		List<String> code = new ArrayList<>();
 		int name_ctr = 0;
+		HashMap<String, String> p_name_map = new HashMap<>(); // jpl var name to the c code var name; personal name map
 		//TypeChecker.Environment env = new TypeChecker.Environment();
 
 
@@ -235,9 +240,11 @@ class C_Code {
 		}
 
 		public void Begin(List<Parser.ASTNode> commands) throws C_Exception {
+			p_name_map = parent.name_map; // jpl_main has actual stuff
+
 			code.add("void jpl_main(struct args args) {");
-			parent.name_map.put("args","args");
-			parent.name_map.put("argnum","args.d0");
+			p_name_map.put("args","args");
+			p_name_map.put("argnum","args.d0");
 			for(var cmd : commands) {
 				if(!(cmd instanceof Parser.Cmd)) throw new C_Exception("Unknown error: expected command");
 				cvt_cmd((Parser.Cmd)cmd);
@@ -246,6 +253,10 @@ class C_Code {
 		}
 
 		private void begin_not_main(List<Parser.Stmt> statements, boolean isVoid) throws C_Exception {
+			for(String i : parent.name_map.keySet()) {
+				p_name_map.put(i, i);
+			}
+
 			// statements
 			for(var stmt : statements) {
 				cvt_stmt(stmt);
@@ -301,12 +312,12 @@ class C_Code {
 			for(var binding : cmd.bindings) {
 				inputs += type_helper(binding.type) + " " + binding.lvalue.identifier + ", ";
 				// save arg bindings
-				parent.name_map.put(binding.lvalue.identifier, binding.lvalue.identifier);
+				p_name_map.put(binding.lvalue.identifier, binding.lvalue.identifier);
 				// save size binding (yes seem to only be able to be 1 dimension using 'let')
 				if(binding.lvalue instanceof Parser.ArrayLValue blv) {
 					for(int i = 0; i < blv.variables.size(); i++) {
 						String dim_name = blv.variables.get(i);
-						parent.name_map.put(dim_name, binding.lvalue.identifier+".d"+i);
+						p_name_map.put(dim_name, binding.lvalue.identifier+".d"+i);
 					}
 				}
 			}
@@ -325,7 +336,7 @@ class C_Code {
 			String c_name = cvt_expr(cmd.expr);
 
 			// save variable bindings
-			parent.name_map.put(cmd.lvalue.identifier, c_name);
+			p_name_map.put(cmd.lvalue.identifier, c_name);
 			parent.expr_map.put(c_name, cmd.expr);
 
 			// save size binding (yes seem to only be able to be 1 dimension using 'let')
@@ -334,7 +345,7 @@ class C_Code {
 
 				for(int i = 0; i < arrlval.variables.size(); i++) {
 					String dim_name = arrlval.variables.get(i);
-					parent.name_map.put(dim_name, c_name+".d"+i);
+					p_name_map.put(dim_name, c_name+".d"+i);
 				}
 			}
 		}
@@ -444,7 +455,7 @@ class C_Code {
 			code.add(indent + "_a2_rgba " + c_name + " = read_image(" + cmd.read_file + ");");
 
 			// save variable bindings
-			parent.name_map.put(cmd.lvalue.identifier, c_name);
+			p_name_map.put(cmd.lvalue.identifier, c_name);
 
 			// bind height + width (has to be 2 because image is 2d array)
 			if(cmd.lvalue instanceof Parser.ArrayLValue arrlval) {
@@ -452,7 +463,7 @@ class C_Code {
 					String dim_name = arrlval.variables.get(i);
 					code.add(indent + "int64_t " + dim_name + " = " + c_name + ".d"+i + ";");
 					// save size bindings
-					parent.name_map.put(dim_name, c_name+".d"+i);
+					p_name_map.put(dim_name, c_name+".d"+i);
 				}
 			}
 		}
@@ -488,7 +499,7 @@ class C_Code {
 			String c_name = cvt_expr(stmt.expr);
 
 			// save variable bindings
-			parent.name_map.put(stmt.lvalue.identifier, c_name); // might have to remove from parent map later
+			p_name_map.put(stmt.lvalue.identifier, c_name); // might have to remove from parent map later
 
 			// save size binding (yes seem to only be able to be 1 dimension using 'let')
 			if(stmt.lvalue instanceof Parser.ArrayLValue) {
@@ -496,7 +507,7 @@ class C_Code {
 
 				for(int i = 0; i < arrlval.variables.size(); i++) {
 					String dim_name = arrlval.variables.get(i);
-					parent.name_map.put(dim_name, c_name+".d"+i);
+					p_name_map.put(dim_name, c_name+".d"+i);
 				}
 			}
 		}
@@ -584,7 +595,7 @@ class C_Code {
 			return c_name;
 		}
 		private String cvt_expr_var(Parser.VarExpr expr) {
-			return parent.name_map.get(expr.str);
+			return p_name_map.get(expr.str);
 		}
 		private String cvt_expr_unop(Parser.UnopExpr expr) throws C_Exception {
 			String c_name_inner = cvt_expr(expr.expr);
@@ -786,7 +797,7 @@ class C_Code {
 				code.add(indent + "int64_t " + c_varname + " = 0; // " + expr.variables.get(i));
 
 				// save variable bindings
-				parent.name_map.put(expr.variables.get(i), c_varname);
+				p_name_map.put(expr.variables.get(i), c_varname);
 				parent.expr_map.put(c_varname, expr.expressions.get(i));
 			}
 			String c_jump_body = parent.add_jump();
@@ -843,7 +854,7 @@ class C_Code {
 				code.add(indent + "int64_t " + c_varname + " = 0; // " + expr.variables.get(i));
 
 				// save variable bindings
-				parent.name_map.put(expr.variables.get(i), c_varname);
+				p_name_map.put(expr.variables.get(i), c_varname);
 				parent.expr_map.put(c_varname, expr.expressions.get(i));
 			}
 			String c_jump_body = parent.add_jump();

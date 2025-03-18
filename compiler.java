@@ -52,18 +52,14 @@ public class compiler {
 		}
 
 /*
-		String jpl_code = "read image \"a.png\" to x[W, H]\n" +
-				"fn f(d : int) : int {\n" +
-				"   return W * H + d\n" +
-				"}\n" +
-				"show f(13)";
+		String jpl_code = "";
 		var output = Parser.parse_code( Lexer.Lex(jpl_code) );
 		var env = TypeChecker.type_check(output);
 		System.out.println(C_Code.convert_to_c(output, env));
-*/
+
 
 		System.out.println("Compilation succeeded");
-	}
+	}*/
 
 	public static String getFileContents(String filepath) throws Exception {
 		//String currentWorkingDirectory = System.getProperty("user.dir");
@@ -254,7 +250,10 @@ class C_Code {
 
 		private void begin_not_main(List<Parser.Stmt> statements, boolean isVoid) throws C_Exception {
 			for(String i : parent.name_map.keySet()) {
-				p_name_map.put(i, i);
+				if(!(parent.name_map.get(i)).contains("."))
+					p_name_map.put(i, i);
+				else
+					p_name_map.put(i, parent.name_map.get(i));
 			}
 
 			// statements
@@ -391,7 +390,7 @@ class C_Code {
 			else if(type instanceof Parser.ArrayType) {
 				var arrType = (Parser.ArrayType)type;
 				String c_inner_type = type_helper(arrType.type); // get type for inner type
-				return parent.add_struct(arrType.dimension, c_inner_type);
+				return parent.add_struct(arrType.dimension, c_inner_type); //"_a" + arrType.dimension + "_" + c_inner_type;
 			}
 			else throw new C_Exception("Unknown exception: no such Parser.Type");
 		}
@@ -470,7 +469,7 @@ class C_Code {
 
 		private void cvt_cmd_write(Parser.WriteCmd cmd) throws C_Exception {
 			String c_name = cvt_expr(cmd.expr);
-			code.add(indent + "write_image( " + c_name + ", " + cmd.write_file + ");");
+			code.add(indent + "write_image(" + c_name + ", " + cmd.write_file + ");");
 		}
 
 		private void cvt_cmd_time(Parser.TimeCmd cmd) throws C_Exception {
@@ -782,7 +781,7 @@ class C_Code {
 				String c_namei = cvt_expr(expr.expressions.get(i));
 				c_names.add(c_namei);
 
-				code.add(indent + "if (" + c_namei + " > 0)");
+				code.add(indent + "if (" + c_namei + " > 0) ");
 				String c_jump = parent.add_jump();
 				code.add(indent + "goto " + c_jump + ";");
 				code.add(indent + "fail_assertion(\"non-positive loop bound\");");
@@ -820,8 +819,7 @@ class C_Code {
 		private String cvt_expr_arrayloop(Parser.ArrayLoopExpr expr) throws C_Exception {
 			String c_name = gensym();
 			String c_type = get_c_type(expr.expr);
-			String st_name = parent.add_struct(expr.expressions.size(), c_type);
-
+			String st_name = "_a" + expr.expressions.size() + "_" + c_type;
 			code.add(indent + st_name + " " + c_name + ";");
 
 			List<String> c_names = new ArrayList<>();
@@ -831,7 +829,7 @@ class C_Code {
 				c_names.add(c_namei);
 
 				code.add(indent + c_name + ".d" + i + " = " + c_namei + ";");
-				code.add(indent + "if (" + c_namei + " > 0)");
+				code.add(indent + "if (" + c_namei + " > 0) ");
 				String c_jump = parent.add_jump();
 				code.add(indent + "goto " + c_jump + ";");
 				code.add(indent + "fail_assertion(\"non-positive loop bound\");");
@@ -860,7 +858,7 @@ class C_Code {
 			String c_jump_body = parent.add_jump();
 			code.add(indent + c_jump_body + ":; // Begin body of loop");
 
-			String body_c_name = cvt_expr(expr.expr);
+			String body_c_name = cvt_expr(expr.expr); // adds _a1_int64
 			String idx = gensym();
 			code.add(indent + "int64_t " + idx + " = 0;");
 			for(int i = 0; i < expr.variables.size(); i++) {
@@ -869,6 +867,7 @@ class C_Code {
 			}
 			code.add(indent + c_name + ".data[" + idx + "] = " + body_c_name + ";");
 
+			parent.add_struct(expr.expressions.size(), c_type); // adds _a3__a1_int64_t;
 
 			for(int i = expr.variables.size()-1; i >= 0; i--) {
 				code.add(indent + c_varnames.get(i) + "++;");

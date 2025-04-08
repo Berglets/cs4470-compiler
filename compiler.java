@@ -7,9 +7,9 @@ import java.util.*;
 
 public class compiler {
 	public static void main(String[] args) throws Exception {
-
+/*
 		String filepath;
-		String flag = "";
+		String flag = ""; // either -l or -p for now
 
 		if(args.length == 0)
 			throw new Exception("Too few arguments");
@@ -50,33 +50,43 @@ public class compiler {
 			var env = TypeChecker.type_check(output);
 			System.out.println(C_Code.convert_to_c(output, env));
 		}
-		if(flag.equals("-s") || true) { // asm codeTODO remove true, temp for autograder
+		if(flag.equals("-s") || true) { // asm TODO remove true, temp for autograder
 			var output = Parser.parse_code( Lexer.Lex(jpl_code) );
 			var env = TypeChecker.type_check(output);
 			var asm = new x86_Asm.Assembly(output, env);
 			System.out.println(asm.toString());
 		}
+		*/
 
 
-/*
 
 		String jpl_code = "show false\n" +
 				"\n" +
-				"let a[b] = [((- 0.85) <= (- (- (17.6 % 13.01)))), (! (! (true != true))), (! (589 > 111))]\n" +
-				"let c = 995\n" +
-				"let d = ((- (b * (- (c * 713)))) / 611)\n" +
-				"let e = (46.63 % ((- (57.52 * (- 16.05))) + ((- 32.06) + ((- 93.42) % (32.4 * 99.31)))))\n" +
-				"let f = 305\n" +
-				"let g = (738 + b)\n" +
-				"let h[i] = a\n" +
-				"let j[k] = h\n" +
-				"let l = h\n" +
-				"let m = (- e)\n" +
-				"let n = a";
+				"show (26.82 % (((44.98 % 15.21) * (20.85 % 58.25)) * 74.19))\n" +
+				"\n" +
+				"show (- 445)\n" +
+				"\n" +
+				"show ((- (762 - 672)) % 26)\n" +
+				"\n" +
+				"show (- ((- (- 96.66)) / (- (10.0 / (- 60.1)))))\n" +
+				"\n" +
+				"show (- (- (989 * 914)))\n" +
+				"\n" +
+				"show (952 - (- (((898 * 683) % (2 / 151)) / 328)))\n" +
+				"\n" +
+				"show (- 55.02)\n" +
+				"\n" +
+				"show ((- (810 / 883)) <= (- 188))\n" +
+				"\n" +
+				"show true\n" +
+				"\n" +
+				"show (! (! ((- (- 77.91)) == (56.31 / 36.19))))\n" +
+				"\n" +
+				"show ((- 247) + (- (((- 983) - 918) * (- 717))))";
 		var output = Parser.parse_code( Lexer.Lex(jpl_code) );
 		var env = TypeChecker.type_check(output);
 		var asm = new x86_Asm.Assembly(output, env);
-		System.out.println(asm.toString());*/
+		System.out.println(asm.toString());
 
 
 		System.out.println("Compilation succeeded");
@@ -130,8 +140,11 @@ class x86_Asm {
 
 		public void generate_assembly() {
 			ASM_Function main = new ASM_Function("jpl_main", this);
-			main.run_cmds(commands);
 			functions.add(main);
+			main.run_cmds(commands);
+
+
+
 		}
 
 		public String add_jump() {
@@ -203,95 +216,11 @@ class x86_Asm {
 						ret += "        "; // indentation. Not on labels
 					ret += line + "\n";
 				}
-				ret += "\n";
 			}
 			return ret;
 		 }
 
 
-	}
-
-	public static class StackArg {
-		public int size; // size of argument
-		public int offset; // offset of where to find argument
-		public TypeChecker.TypeValue type; // type of argument
-
-		public StackArg(int size, int offset, TypeChecker.TypeValue rtype) {
-			this.size = size;
-			this.offset = offset;
-			this.type = rtype;
-		}
-	}
-
-	public static class Register {
-		String name;
-		public TypeChecker.TypeValue type;
-
-		public Register(String name, TypeChecker.TypeValue type) {
-			this.name = name;
-			this.type = type;
-		}
-	}
-
-	public static class CallingConvention {
-		public Object ret = null;  // either a StackArg or a Register
-		public List<Object> args = new ArrayList<>();
-		public int total_stack_size;
-
-		public CallingConvention(List<TypeChecker.TypeValue> arg_types, TypeChecker.TypeValue ret_type) {
-			String[] int_regs = {"rdi", "rsi", "rdx", "rcx", "r8", "r9"};
-			String[] float_regs = {"xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "xmm5", "xmm6", "xmm7", "xmm8"};
-			int int_args = 0; // counter
-			int float_args = 0; // counter
-			int offset = 0;
-
-			// process return
-			if(ret_type.type_name.equals("IntType") || ret_type.type_name.equals("BoolType"))
-				ret = new Register("rax", ret_type);
-			else if(ret_type.type_name.equals("FloatType"))
-				ret = new Register("xmm0", ret_type);
-			else if(ret_type.toString().contains("Array")) {
-				int size = get_size(ret_type);
-				offset += size;
-				ret = new StackArg(size, offset, ret_type);
-				int_args++;
-			}
-
-			// process arguments
-			List<TypeChecker.TypeValue> stack_args = new ArrayList<>();
-			for(var atype : arg_types) {
-				if(atype.type_name.equals("IntType") || atype.type_name.equals("BoolType")
-					&& int_args < int_regs.length /* have used up all registers yet? */) {
-					args.add(new Register(int_regs[int_args], atype));
-					int_args++;
-				}
-				else if(atype.type_name.equals("FloatType") && float_args < float_regs.length) {
-					args.add(new Register(float_regs[float_args], atype));
-					float_args++;
-				}
-				else {
-					stack_args.add(atype);
-					args.add(null); // gotta fix these later
-				}
-			}
-
-			// reverse order of stack_args and make them actually stack args
-			List<StackArg> stack_posns = new ArrayList<>();
-			for(int i = stack_args.size() - 1; i >= 0; i--) {
-				var atype = stack_args.get(i);
-				int size = get_size(atype);
-				offset += size;
-				stack_posns.add(new StackArg(size, offset, atype));
-			}
-
-			// Fix null args with correct StackArg objects
-			for(int i = 0; i < args.size(); i++) {
-				if(args.get(i) == null)
-					args.set(i, pop_list(stack_posns));
-			}
-
-			total_stack_size = offset;
-		}
 	}
 
 	public static class ASM_Function {
@@ -316,24 +245,17 @@ class x86_Asm {
 		public void run_cmds(List<Parser.ASTNode> commands) {
 			parent.global_stack = stack; // gross
 
-			var var_list = new ArrayList<String>();
-			var_list.add("argnum");
-			stack.add_lvalue(new Parser.ArrayLValue(0, 0, "args", var_list), -16);
-
 			// Prologue
 			code.add("push rbp");
 			code.add("mov rbp, rsp");
 			code.add("push r12");
 			code.add("mov r12, rbp ; end of jpl_main prelude");
 
-			stack.shadow.add("(IntType)"); // possible bug?
 			stack.increment(8);
+			//stack.align(8);
 
 			for(var cmd : commands)
 				gen_cmd((Parser.Cmd)cmd);
-
-			if(stack.size > 8)
-				code.add("add rsp, " + (stack.size - 8) + " ; Local variables");
 
 			// Epilogue
 			add_line("pop r12 ; begin jpl_main postlude");
@@ -364,89 +286,18 @@ class x86_Asm {
 			add_line(jump_label + ":");
 		}
 
-		// start and end are registers
-		public void copy_data(int byte_size, String start, String end) {
-			for(int i = byte_size-8; i >= 0; i -= 8) {
-				add_line("mov r10, [" + start + " + " + i + "]");
-				add_line("mov [" + end + " + " + i + "], r10");
-			}
-		}
-
 
 
 		//
 		//  COMMANDS
 		//
 		public void gen_cmd(Parser.Cmd cmd) {
-			if(cmd instanceof Parser.ShowCmd showCmd)
-				gen_cmd_show(showCmd);
-			else if(cmd instanceof Parser.LetCmd letCmd)
-				gen_cmd_let(letCmd);
-			else if(cmd instanceof Parser.FnCmd fnCmd)
-				gen_cmd_fn(fnCmd);
+			if(cmd instanceof Parser.ShowCmd show_cmd)
+				gen_cmd_show(show_cmd);
 			else throw new ASM_Exception("Unimplemented command type");
 
 		}
 
-		public void gen_cmd_fn(Parser.FnCmd cmd) {
-			ASM_Function asm_fn = new ASM_Function(cmd.identifier, parent);
-			asm_fn.gen_cmd_fn_driven(cmd); // needed for asm code to appear in new function
-			parent.functions.add(asm_fn);
-		}
-		public void gen_cmd_fn_driven(Parser.FnCmd cmd) {
-			add_line("push rbp");
-			add_line("mov rbp, rsp");
-			CallingConvention cc;
-
-			// build calling convention object
-			try {
-				TypeChecker.NameInfo tc_ni = parent.env.lookup(cmd.identifier);
-				TypeChecker.FunctionInfo tc_fn = (TypeChecker.FunctionInfo)tc_ni;
-				cc = new CallingConvention(tc_fn.argument_types, tc_fn.return_type);
-			}
-			catch(Exception ex) {
-				throw new ASM_Exception("Error getting function information for " + cmd.identifier);
-			}
-
-			if(cc.ret instanceof StackArg) {
-				stack.push("rdi", new TypeChecker.TypeValue("IntType"));
-				stack.dict.put("$return", stack.size);
-			}
-
-			// receive args
-			if(cmd.bindings.size() != cc.args.size())
-				throw new ASM_Exception("Internal issue building arguments");
-
-			for(int i = 0; i < cc.args.size(); i++) {
-				var lvalue = cmd.bindings.get(i).lvalue;
-				var arg = cc.args.get(i);
-
-				if(arg instanceof StackArg sArg) {
-					int offset = cc.total_stack_size - sArg.offset + 16;
-					stack.add_lvalue(lvalue, -offset);
-				}
-				else if(arg instanceof Register regArg) {
-					stack.push(regArg.name, regArg.type);
-					stack.add_lvalue(lvalue, null);
-				}
-			}
-
-			// process statements
-			boolean has_return = false;
-			for(var stmt : cmd.statements) {
-				gen_stmt(stmt);
-				if(stmt instanceof Parser.ReturnStmt)
-					has_return = true;
-			}
-
-			// implicit return
-			if(!has_return) {
-				if(stack.size > 0)
-					add_line("add rsp, " + stack.size + " ; Local variables");
-				add_line("pop rbp");
-				add_line("ret");
-			}
-		}
 		public void gen_cmd_show(Parser.ShowCmd cmd) {
 			stack.align(get_size(cmd.expr.type));
 			gen_expr(cmd.expr);
@@ -456,43 +307,7 @@ class x86_Asm {
 			stack.free(cmd.expr.type, 1);
 			stack.unalign();
 		}
-		public void gen_cmd_let(Parser.LetCmd cmd) {
-			gen_expr(cmd.expr);
-			stack.add_lvalue(cmd.lvalue, null);
-		}
 
-
-		//
-		//  STATEMENTS
-		//
-		public void gen_stmt(Parser.Stmt stmt) {
-			if(stmt instanceof Parser.LetStmt letStmt)
-				gen_stmt_let(letStmt);
-			else if(stmt instanceof Parser.ReturnStmt retStmt)
-				gen_stmt_ret(retStmt);
-			else throw new ASM_Exception("Unimplemented statement type");
-		}
-
-		public void gen_stmt_let(Parser.LetStmt stmt) {
-			gen_expr(stmt.expr);
-			stack.add_lvalue(stmt.lvalue, null);
-		}
-		public void gen_stmt_ret(Parser.ReturnStmt stmt) {
-			gen_expr(stmt.expr);
-			String type = stmt.expr.type.type_name;
-			if(type.equals("IntType") || type.equals("BoolType"))
-				stack.pop("rax", stmt.expr.type);
-			else if(type.equals("FloatType"))
-				stack.pop("xmm0", stmt.expr.type);
-			else {
-				int ret_loc = stack.dict.get("$return");
-				add_line("mov rax, [rbp - " + ret_loc + "] ; Address to write return value into");
-				copy_data(get_size(stmt.expr.type), "rsp", "rax");
-			}
-			add_line("add rsp, " + stack.size + " ; Local variables");
-			add_line("pop rbp");
-			add_line("ret");
-		}
 
 		//
 		//  EXPRESSIONS
@@ -512,10 +327,6 @@ class x86_Asm {
 				gen_expr_binop(binopExpr);
 			else if(expr instanceof Parser.ArrayLiteralExpr ale)
 				gen_expr_arrayliteral(ale);
-			else if(expr instanceof Parser.VarExpr varExpr)
-				gen_expr_var(varExpr);
-			else if(expr instanceof Parser.CallExpr callExpr)
-				gen_expr_call(callExpr);
 			else throw new ASM_Exception("Unimplemented expression type");
 		}
 
@@ -683,92 +494,24 @@ class x86_Asm {
 		public void gen_expr_arrayliteral(Parser.ArrayLiteralExpr expr) {
 			for(int i = expr.exprs.size() - 1; i >= 0; i--)
 				gen_expr(expr.exprs.get(i));
-			int byte_size = expr.exprs.size() * get_size(expr.exprs.get(0).type);
+			int byte_size = expr.exprs.size() * get_size(expr.exprs.get(1).type);
 			add_line("mov rdi, " + byte_size);
 
 			stack.align(0);
 			add_line("call _jpl_alloc");
 			stack.unalign();
 
-			copy_data(byte_size, "rsp", "rax");
+			// copy data
+			for(int i = byte_size-8; i >= 0; i -= 8) {
+				add_line("mov r10, [rsp + " + i + "]");
+				add_line("mov [rax + " + i + "], r10");
+			}
 			stack.free(expr.exprs.get(0).type, expr.exprs.size());
 			// mystery line?   add_line("mov rdi, " + byte_size);
 			stack.push("rax", new TypeChecker.TypeValue("IntType"));
 			add_line("mov rax, " + expr.exprs.size());
 			stack.push("rax", new TypeChecker.TypeValue("IntType"));
 			stack.recharacterize(2, expr.type);
-		}
-		public void gen_expr_var(Parser.VarExpr expr) {
-			int byte_size = get_size(expr.type);
-			stack.alloc(expr.type, 1);
-
-			if(stack.dict.containsKey(expr.str))  // local variable (to function)
-				copy_data(byte_size, "rbp - " + stack.dict.get(expr.str) , "rsp");
-			else // global variable
-				copy_data(byte_size, "r12 - " + parent.global_stack.dict.get(expr.str), "rsp");
-		}
-		public void gen_expr_call(Parser.CallExpr expr) {
-			CallingConvention cc;
-			TypeChecker.TypeValue rtype;
-
-			// build calling convention
-			try {
-				TypeChecker.NameInfo tc_ni = parent.env.lookup(expr.identifier);
-				TypeChecker.FunctionInfo tc_fn = (TypeChecker.FunctionInfo)tc_ni;
-				cc = new CallingConvention(tc_fn.argument_types, tc_fn.return_type);
-				rtype = tc_fn.return_type;
-			}
-			catch(Exception ex) {
-				throw new ASM_Exception("Trouble building calling convention inside call expression");
-			}
-
-			// prepare stack with return value
-			int offset = 0;
-			if(cc.ret instanceof StackArg sArg) {
-				stack.alloc(sArg.type, 1);
-				offset = sArg.size;
-			} //else
-				//stack.shadow.add(rtype.toString()); // in slides but incorrect
-
-			stack.align(cc.total_stack_size - offset);
-
-			// generate code for stack args (right to left)
-			if(expr.expressions.size() != cc.args.size())
-				throw new ASM_Exception("Internal issue generating arg code, sizes don't match");
-			for(int i = expr.expressions.size() - 1; i >= 0; i--) {
-				if(cc.args.get(i) instanceof StackArg)
-					gen_expr(expr.expressions.get(i));
-			}
-
-			// generate code for other args (right to left)
-			for(int i = expr.expressions.size() - 1; i >= 0; i--) {
-				if(cc.args.get(i) instanceof Register)
-					gen_expr(expr.expressions.get(i));
-			}
-
-			// Pop register args into correct registers
-			for(int i = 0; i < expr.expressions.size(); i++) {
-				if(cc.args.get(i) instanceof Register reg)
-					stack.pop(reg.name, reg.type);
-			}
-
-			if(cc.ret instanceof StackArg sArg) {
-				offset = cc.total_stack_size - sArg.offset + stack.padding_stack.get(stack.padding_stack.size()-1); // seems to be correct
-				add_line("lea rdi, [rsp + " + offset + "]");
-			}
-
-			add_line("call _" + expr.identifier);
-
-			// free stack args one by one
-			for(int i = 0; i < expr.expressions.size(); i++) {
-				if(cc.args.get(i) instanceof StackArg sArg)
-					stack.free(sArg.type, 1);
-			}
-
-			stack.unalign();
-			// push ret if register to stack
-			if(cc.ret instanceof Register reg)
-				stack.push(reg.name, reg.type);
 		}
 	}
 
@@ -785,6 +528,11 @@ class x86_Asm {
 			this.func = func;
 			padding_stack = new ArrayList<>();
 			shadow = new ArrayList<>();
+		}
+
+		// remove and return latest value from stack list
+		public static <T> T pop_list(List<T> stack) {
+			return stack.remove(stack.size() -1);
 		}
 
 		public void increment(int bytes) {
@@ -878,19 +626,17 @@ class x86_Asm {
 		}
 
 		// Set pos == null for default
-		public void add_lvalue(Parser.LValue lvalue, Integer base) {
-			if(base == null)
-				base = size;
+		public void add_lvalue(Parser.LValue lvalue, Integer top) {
+			if(top == null) top = size;
 
-			if(lvalue instanceof Parser.VarLValue vlv) {
-				dict.put(vlv.identifier, base);
-			}
-			else if(lvalue instanceof Parser.ArrayLValue alv) {
-				dict.put(alv.identifier, base);
-				for (String variable : alv.variables) {
-					dict.put(variable, base);
-					base -= 8;
+			if(lvalue instanceof Parser.ArrayLValue alv) {
+				dict.put(alv.identifier, top);
+				for(String variable : alv.variables) {
+					dict.put(variable, top);
+					top -= 8;
 				}
+			} else if(lvalue instanceof Parser.VarLValue vlv) {
+				dict.put(vlv.identifier, top);
 			}
 		}
 
@@ -901,11 +647,6 @@ class x86_Asm {
 			return 8 + (arrtype.rank * 8);
 		else
 			return 8;
-	}
-
-	// remove and return latest value from stack list
-	public static <T> T pop_list(List<T> stack) {
-		return stack.remove(stack.size() -1);
 	}
 
 }

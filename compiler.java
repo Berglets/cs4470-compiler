@@ -8,7 +8,7 @@ import java.util.*;
 public class compiler {
 	public static void main(String[] args) throws Exception {
 
-		String filepath = "";
+		String filepath;
 		String flag = "";
 
 		if(args.length == 0)
@@ -16,11 +16,22 @@ public class compiler {
 		else if(args.length == 1)
 			filepath = args[0];
 		else if(args.length == 2) {
-			flag = args[0];
-			filepath = args[1];
+			filepath = args[0];
+			flag = args[1];
 		}
-		//else
-			//throw new Exception("Too many arguments");
+		else if(args.length == 3) {
+			filepath = args[0];
+			flag = "-s -01";
+		}
+		else
+			throw new Exception("Too many arguments");
+
+		if(filepath.startsWith("-")) {
+			var temp = filepath;
+			filepath = flag;
+			flag = temp;
+		}
+
 
 		String jpl_code = getFileContents(filepath);
 
@@ -50,23 +61,29 @@ public class compiler {
 			var env = TypeChecker.type_check(output);
 			System.out.println(C_Code.convert_to_c(output, env));
 		}
-		if(flag.equals("-s") || true) { // asm codeTODO remove true, temp for autograder
+		if(flag.equals("-s")) { // asm code
 			var output = Parser.parse_code( Lexer.Lex(jpl_code) );
 			var env = TypeChecker.type_check(output);
-			var asm = new x86_Asm.Assembly(output, env);
+			var asm = new x86_Asm.Assembly(output, env, 0);
+			System.out.println(asm.toString());
+		}
+		if(flag.equals("-s -01") || true) { // asm code opt level 1
+			var output = Parser.parse_code( Lexer.Lex(jpl_code) );
+			var env = TypeChecker.type_check(output);
+			var asm = new x86_Asm.Assembly(output, env, 1);
 			System.out.println(asm.toString());
 		}
 
-
-
 /*
-		String jpl_code = "show sum[i : 65537, j : 65537, k : 65537, l : 65537] i + j + k + l";
+
+		String jpl_code = "let a = [args] // a : int[][]\n" +
+				"show a[0][1] // one is optimized, the other isn't";
+
 		var output = Parser.parse_code( Lexer.Lex(jpl_code) );
 		var env = TypeChecker.type_check(output);
-		var asm = new x86_Asm.Assembly(output, env);
+		var asm = new x86_Asm.Assembly(output, env, 1);
 		System.out.println(asm.toString());
 */
-
 		System.out.println("Compilation succeeded");
 	}
 
@@ -106,13 +123,15 @@ class x86_Asm {
 		TypeChecker.Environment env;
 		Stack global_stack;
 		List<Parser.ASTNode> commands;
+		int OPT_LEVEL;
 
-		public Assembly(List<Parser.ASTNode> commands, TypeChecker.Environment env) {
+		public Assembly(List<Parser.ASTNode> commands, TypeChecker.Environment env, int OPT_LEVEL) {
 			data = new ArrayList<>();
 			functions = new ArrayList<>();
 			constant_names = new HashMap<>();
 			this.commands = commands;
 			this.env = env;
+			this.OPT_LEVEL = OPT_LEVEL;
 			generate_assembly();
 		}
 
@@ -354,6 +373,7 @@ class x86_Asm {
 
 		// start and end are registers
 		public void copy_data(int byte_size, String start, String end) {
+			add_line("; Moving bytes");
 			for(int i = byte_size-8; i >= 0; i -= 8) {
 				add_line("mov r10, [" + start + " + " + i + "]");
 				add_line("mov [" + end + " + " + i + "], r10");
@@ -438,7 +458,7 @@ class x86_Asm {
 		public void gen_cmd_show(Parser.ShowCmd cmd) {
 			stack.align(get_size(cmd.expr.type));
 			gen_expr(cmd.expr);
-			const_into_register("rdi", cmd.expr.type.toString()); // TODO: might be issues if type is array
+			const_into_register("rdi", cmd.expr.type.toString());
 			add_line("lea rsi, [rsp]");
 			add_line("call _show");
 			stack.free(cmd.expr.type, 1);
@@ -516,6 +536,13 @@ class x86_Asm {
 		}
 
 		public void gen_expr_int(Parser.IntExpr expr) {
+			if(parent.OPT_LEVEL > 0 && is32BitNumber(expr.integer)) {
+				add_line("push qword " + expr.integer);
+				stack.shadow.add(expr.type.toString());
+				stack.increment(8);
+				return;
+			}
+
 			const_into_register("rax", expr.integer);
 			stack.push("rax", new TypeChecker.TypeValue("IntType"));
 			stack.recharacterize(1, expr.type);
@@ -526,11 +553,25 @@ class x86_Asm {
 			stack.recharacterize(1, expr.type);
 		}
 		public void gen_expr_true(Parser.TrueExpr expr) {
+			if(parent.OPT_LEVEL > 0) {
+				add_line("push qword 1");
+				stack.shadow.add(expr.type.toString());
+				stack.increment(8);
+				return;
+			}
+
 			const_into_register("rax", 1);
 			stack.push("rax", new TypeChecker.TypeValue("IntType"));
 			stack.recharacterize(1, expr.type);
 		}
 		public void gen_expr_false(Parser.FalseExpr expr) {
+			if(parent.OPT_LEVEL > 0) {
+				add_line("push qword 0");
+				stack.shadow.add(expr.type.toString());
+				stack.increment(8);
+				return;
+			}
+
 			const_into_register("rax", 0);
 			stack.push("rax", new TypeChecker.TypeValue("IntType"));
 			stack.recharacterize(1, expr.type);
@@ -553,6 +594,30 @@ class x86_Asm {
 			} else throw new ASM_Exception("unimplemented unop expression type");
 		}
 		public void gen_expr_binop(Parser.BinopExpr expr) {
+
+			Long lhs_val = getIntValue(expr.expr1);
+			Long rhs_val = getIntValue(expr.expr2);
+			if(parent.OPT_LEVEL > 0 && expr.op.equals("*") && isPowerOfTwo(lhs_val)) {
+				gen_expr(expr.expr2);
+				long log = logBase2(lhs_val);
+				if(log == 0)
+					return;
+				stack.pop("rax", expr.expr2.type);
+				add_line("shl rax, " + log);
+				stack.push("rax", expr.expr2.type);
+				return;
+			}
+			if(parent.OPT_LEVEL > 0 && expr.op.equals("*") && isPowerOfTwo(rhs_val)) {
+				gen_expr(expr.expr1);
+				long log = logBase2(rhs_val);
+				if(log == 0)
+					return;
+				stack.pop("rax", expr.expr1.type);
+				add_line("shl rax, " + log);
+				stack.push("rax", expr.expr1.type);
+				return;
+			}
+
 			String type = expr.expr1.type.type_name;
 
 			// strangeness for fmod
@@ -768,6 +833,17 @@ class x86_Asm {
 		}
 		public void gen_expr_if(Parser.IfExpr expr) {
 			gen_expr(expr.expr1); // if expr
+
+			if(parent.OPT_LEVEL > 0) {
+				Long then_val = getIntValue(expr.expr2);
+				Long else_val = getIntValue(expr.expr3);
+
+				if(then_val != null && else_val != null && then_val == 1 && else_val == 0) {
+					stack.recharacterize(1, new TypeChecker.TypeValue("IntType"));
+					return;
+				}
+			}
+
 			stack.pop("rax", new TypeChecker.TypeValue("BoolType"));
 			add_line("cmp rax, 0");
 			String else_label = parent.add_jump();
@@ -785,8 +861,14 @@ class x86_Asm {
 			if(!(expr.expr.type instanceof TypeChecker.ArrayType))
 				throw new ASM_Exception("ArrayIndexExpr got non-array");
 
-			gen_expr(expr.expr);
-			int gap = ((TypeChecker.ArrayType)expr.expr.type).rank;
+			int gap;
+			if(parent.OPT_LEVEL > 0 && expr.expr instanceof Parser.VarExpr varExpr) {
+				gap = ((stack.size - stack.dict.get(varExpr.str)) / 8) + ((TypeChecker.ArrayType)expr.expr.type).rank;
+			}
+			else {
+				gen_expr(expr.expr);
+				gap = ((TypeChecker.ArrayType)expr.expr.type).rank;
+			}
 
 			// generate expressions backwards (put on stack in correct order)
 			for(int i = expr.expressions.size() - 1; i >= 0; i--)
@@ -800,14 +882,23 @@ class x86_Asm {
 				create_assert("index too large", "jl");
 			}
 
-			asm_index((TypeChecker.ArrayType)expr.expr.type, 0, gap);
+			List<Long> sizes = new ArrayList<>();
+			for(int i = 0; i < ((TypeChecker.ArrayType)expr.expr.type).rank; i++)
+				sizes.add(null);
+			index_helper((TypeChecker.ArrayType)expr.expr.type, 0, gap, sizes);
 
-			// free in opposite order we added
-			for(var e : expr.expressions)
-				stack.free(e.type, 1);
-			stack.free(expr.expr.type, 1);
+			// free from stack
+			if(parent.OPT_LEVEL > 0 && expr.expr instanceof Parser.VarExpr varExpr)
+				stack.free(expr.expressions.get(0).type, ((TypeChecker.ArrayType)expr.expr.type).rank);
+			else {
+				// free in opposite order we added
+				for(var e : expr.expressions)
+					stack.free(e.type, 1);
+				stack.free(expr.expr.type, 1);
+			}
 
-			TypeChecker.ArrayType expr_arr = (TypeChecker.ArrayType)expr.expr.type; // could be the culprit
+
+			TypeChecker.ArrayType expr_arr = (TypeChecker.ArrayType)expr.expr.type;
 			stack.alloc(expr_arr.inner_type, 1);
 			copy_data(get_size(expr_arr.inner_type), "rax", "rsp");
 		}
@@ -849,7 +940,7 @@ class x86_Asm {
 			int n = variables.size();
 			if(expr instanceof Parser.ArrayLoopExpr arrayLoopExpr) {
 				add_line("; Computing total size of heap memory to allocate");
-				int offset = 0; // not actually needed it seems // TODO: needed for einsum
+				int offset = 0; // not actually needed it seems
 				add_line("mov rdi, " + (get_size(arrayLoopExpr.expr.type)) + " ; sizeof " + arrayLoopExpr.expr.type);
 				for(int i = 0; i < n; i++) {
 					add_line("imul rdi, [rsp + " + (offset * 8) + " + " + (i*8) + "] ; multiply by BOUND");
@@ -880,8 +971,16 @@ class x86_Asm {
 
 			if(expr instanceof Parser.ArrayLoopExpr arrayLoopExpr) {
 				int offset = get_size(arrayLoopExpr.expr.type);
+
+				List<Long> sizes = new ArrayList<>();
+				for(var e : expressions) {
+					if(e instanceof Parser.IntExpr intExpr)
+						sizes.add(intExpr.integer);
+					else
+						sizes.add(null);
+				}
 				add_line("; Index to store in");
-				asm_index((TypeChecker.ArrayType)arrayLoopExpr.type, offset, null);
+				index_helper((TypeChecker.ArrayType)arrayLoopExpr.type, offset, ((TypeChecker.ArrayType)arrayLoopExpr.type).rank, sizes);
 				add_line("; Move body (" + offset + "bytes) to index");
 				copy_data(offset, "rsp", "rax");
 				stack.free(arrayLoopExpr.expr.type, 1);
@@ -933,19 +1032,35 @@ class x86_Asm {
 		}
 
 
-		// default offset = 0
-		// eventually needs max_sizes for optimization (also needed in loops)
-		public void asm_index(TypeChecker.ArrayType type, int offset, Integer gap) {
-			int n = type.rank;
-			if(gap == null)
-				gap = n;
-			add_line("mov rax, 0");
-			for(int i = 0; i < gap; i++) {
-				add_line("imul rax, [rsp + " + (offset + i * 8 + gap * 8) + "] ; No overflow if indices in bounds");
+		public void index_helper(TypeChecker.ArrayType type, int offset, int gap, List<Long> sizes) {
+			if(parent.OPT_LEVEL <= 0)
+				add_line("mov rax, 0"); // remove in optimized case
+
+			for(int i = 0; i < type.rank; i++) {
+
+				// load initial value directly
+				if(parent.OPT_LEVEL > 0 && i == 0) {
+					add_line("mov rax, [rsp + " + (offset + i * 8) + "]");
+					continue;
+				}
+
+				Long SIZE = sizes.get(i);
+
+				if(parent.OPT_LEVEL > 0 && SIZE != null && is32BitNumber(SIZE))
+					add_line("imul rax, " + SIZE);
+				else if(parent.OPT_LEVEL > 0 && SIZE != null && isPowerOfTwo(SIZE))
+					add_line("shl rax, " + logBase2(SIZE));
+				else
+					add_line("imul rax, [rsp + " + (offset + i * 8 + gap * 8) + "] ; No overflow if indices in bounds");
+
 				add_line("add rax, [rsp + " + (offset + i * 8) + "]");
 			}
-			add_line("imul rax, " + get_size(type.inner_type));
-			add_line("add rax, [rsp + " + (offset + n * 8 + gap * 8) + "]");
+
+			if(parent.OPT_LEVEL > 0 && isPowerOfTwo((long)get_size(type.inner_type)))
+				add_line("shl rax, " + logBase2(get_size(type.inner_type)));
+			else
+				add_line("imul rax, " + get_size(type.inner_type));
+			add_line("add rax, [rsp + " + (offset + type.rank * 8 + gap * 8) + "]");
 		}
 
 	}
@@ -1085,6 +1200,35 @@ class x86_Asm {
 	public static <T> T pop_list(List<T> stack) {
 		return stack.remove(stack.size() -1);
 	}
+
+	public static boolean isPowerOfTwo(Long n) {
+		if(n == null)
+			return false;
+
+		return n > 0 && (n & (n - 1)) == 0;
+	}
+
+	public static long logBase2(long n) {
+		double d = Math.log(n) / Math.log(2);
+		return (long)d;
+	}
+
+	public static boolean is32BitNumber(long x) {
+		return x >= -2147483648 && x <= 2147483647;
+	}
+
+	// returns Null if not actually an int
+	public static Long getIntValue(Parser.Expr expr) {
+		if(expr instanceof Parser.IntExpr intExpr)
+			return intExpr.integer;
+		else if(expr instanceof Parser.TrueExpr)
+			return (long)1;
+		else if(expr instanceof Parser.FalseExpr)
+			return (long)0;
+		return null;
+	}
+
+
 
 }
 
@@ -2052,6 +2196,7 @@ class TypeChecker {
 	// between many Exprs. If any issues arise it may be due to this shared state
 	public static class TypeValue {
 		String type_name;
+		boolean bool_val;
 
 		public TypeValue(String type_name) {
 			this.type_name = type_name;
@@ -2373,8 +2518,10 @@ class TypeChecker {
 			tv = new TypeValue("IntType");
 		else if(expr instanceof Parser.FloatExpr)
 			tv = new TypeValue("FloatType");
-		else if(expr instanceof Parser.TrueExpr || expr instanceof Parser.FalseExpr)
+		else if(expr instanceof Parser.TrueExpr || expr instanceof Parser.FalseExpr) {
 			tv = new TypeValue("BoolType");
+			tv.bool_val = expr instanceof Parser.TrueExpr ? true : false;
+		}
 		else if(expr instanceof Parser.VoidExpr)
 			tv = new TypeValue("VoidType");
 		else if(expr instanceof Parser.VarExpr)

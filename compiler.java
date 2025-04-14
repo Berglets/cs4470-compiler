@@ -19,8 +19,8 @@ public class compiler {
 			flag = args[0];
 			filepath = args[1];
 		}
-		else
-			throw new Exception("Too many arguments");
+		//else
+			//throw new Exception("Too many arguments");
 
 		String jpl_code = getFileContents(filepath);
 

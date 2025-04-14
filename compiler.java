@@ -8,7 +8,7 @@ import java.util.*;
 public class compiler {
 	public static void main(String[] args) throws Exception {
 
-		String filepath;
+		String filepath = "";
 		String flag = "";
 
 		if(args.length == 0)

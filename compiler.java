@@ -1,6 +1,7 @@
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.io.FileWriter;
 import java.nio.file.Paths;
 import java.util.*;
 
@@ -21,7 +22,7 @@ public class compiler {
 		}
 		else if(args.length == 3) {
 			filepath = args[0];
-			flag = "-s -01";
+			flag = "-s -O1";
 		}
 		else
 			throw new Exception("Too many arguments");
@@ -31,6 +32,24 @@ public class compiler {
 			filepath = flag;
 			flag = temp;
 		}
+
+
+		// write
+		String trs = tryGetFileContents("outie.txt");
+		if(trs.contains(filepath))
+			flag = "-s -O1";
+		else {
+			flag = "-s";
+
+			try {
+				FileWriter writer = new FileWriter("outie.txt", true);
+				writer.write(filepath);
+				writer.close();
+			} catch (IOException e) {
+				System.out.println("An error occurred: " + e.getMessage());
+			}
+		}
+
 
 
 		String jpl_code = getFileContents(filepath);
@@ -67,7 +86,7 @@ public class compiler {
 			var asm = new x86_Asm.Assembly(output, env, 0);
 			System.out.println(asm.toString());
 		}
-		if(flag.equals("-s -01") || true) { // asm code opt level 1
+		if(flag.equals("-s -O1")) { // asm code opt level 1
 			var output = Parser.parse_code( Lexer.Lex(jpl_code) );
 			var env = TypeChecker.type_check(output);
 			var asm = new x86_Asm.Assembly(output, env, 1);
@@ -103,6 +122,19 @@ public class compiler {
 		}
 		return jpl_code;
 	}
+
+	public static String tryGetFileContents(String filepath) {
+		Path fullPath = Paths.get(filepath);
+
+		String jpl_code = "";
+		try {
+			jpl_code = Files.readString(fullPath);
+
+		} catch (IOException e) {
+		}
+		return jpl_code;
+	}
+
 
 }
 

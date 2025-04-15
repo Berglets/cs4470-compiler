@@ -93,10 +93,9 @@ public class compiler {
 			System.out.println(asm.toString());
 		}
 
-/*
 
-		String jpl_code = "let a = [args] // a : int[][]\n" +
-				"show a[0][1] // one is optimized, the other isn't";
+/*
+		String jpl_code = "show array[i : 256, j : 256] i";
 
 		var output = Parser.parse_code( Lexer.Lex(jpl_code) );
 		var env = TypeChecker.type_check(output);
@@ -1078,10 +1077,10 @@ class x86_Asm {
 
 				Long SIZE = sizes.get(i);
 
-				if(parent.OPT_LEVEL > 0 && SIZE != null && is32BitNumber(SIZE))
-					add_line("imul rax, " + SIZE);
-				else if(parent.OPT_LEVEL > 0 && SIZE != null && isPowerOfTwo(SIZE))
+				if(parent.OPT_LEVEL > 0 && SIZE != null && isPowerOfTwo(SIZE))
 					add_line("shl rax, " + logBase2(SIZE));
+				else if(parent.OPT_LEVEL > 0 && SIZE != null && is32BitNumber(SIZE))
+					add_line("imul rax, " + SIZE);
 				else
 					add_line("imul rax, [rsp + " + (offset + i * 8 + gap * 8) + "] ; No overflow if indices in bounds");
 

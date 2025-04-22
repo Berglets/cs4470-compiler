@@ -8,7 +8,7 @@ compiler.class: compiler.java
 	javac compiler.java
 
 run: compiler.class
-	java compiler $(TEST)
+	java compiler $(TEST) $(FLAGS)
 
 clean:
 	rm -fr *.class

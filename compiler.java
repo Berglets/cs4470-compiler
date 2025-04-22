@@ -1,7 +1,6 @@
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.io.FileWriter;
 import java.nio.file.Paths;
 import java.util.*;
 
@@ -22,38 +21,12 @@ public class compiler {
 		}
 		else if(args.length == 3) {
 			filepath = args[0];
-			flag = "-s -O1";
+			flag = args[1] + " " + args[2];
 		}
 		else
 			throw new Exception("Too many arguments");
 
-		if(filepath.startsWith("-")) {
-			var temp = filepath;
-			filepath = flag;
-			flag = temp;
-		}
-
-
-		// write
-		String trs = tryGetFileContents("outie.txt");
-		if(trs.contains(filepath))
-			flag = "-s -O1";
-		else {
-			flag = "-s";
-
-			try {
-				FileWriter writer = new FileWriter("outie.txt", true);
-				writer.write(filepath);
-				writer.close();
-			} catch (IOException e) {
-				System.out.println("An error occurred: " + e.getMessage());
-			}
-		}
-
-
-
 		String jpl_code = getFileContents(filepath);
-
 
 		// resolve flags
 		if(flag.equals("-l")) { // lexer
@@ -63,45 +36,54 @@ public class compiler {
 			}
 		}
 		if(flag.equals("-p")) { // parser
-			var output = Parser.parse_code( Lexer.Lex(jpl_code) );
+			var output = Parser.parse_code( Lexer.Lex(jpl_code), 0 );
 			for(var node : output) {
 				System.out.println(node.toString());
 			}
 		}
 		if(flag.equals("-t")) { // typechecker
-			var output = Parser.parse_code( Lexer.Lex(jpl_code) );
+			var output = Parser.parse_code( Lexer.Lex(jpl_code), 0 );
 			TypeChecker.type_check(output);
 			for(var node : output) {
 				System.out.println(node.toString());
 			}
 		}
 		if(flag.equals("-i")) {  // c code
-			var output = Parser.parse_code( Lexer.Lex(jpl_code) );
+			var output = Parser.parse_code( Lexer.Lex(jpl_code), 0 );
 			var env = TypeChecker.type_check(output);
 			System.out.println(C_Code.convert_to_c(output, env));
 		}
 		if(flag.equals("-s")) { // asm code
-			var output = Parser.parse_code( Lexer.Lex(jpl_code) );
+			var output = Parser.parse_code( Lexer.Lex(jpl_code), 0 );
 			var env = TypeChecker.type_check(output);
 			var asm = new x86_Asm.Assembly(output, env, 0);
 			System.out.println(asm.toString());
 		}
 		if(flag.equals("-s -O1")) { // asm code opt level 1
-			var output = Parser.parse_code( Lexer.Lex(jpl_code) );
+			var output = Parser.parse_code( Lexer.Lex(jpl_code), 1);
 			var env = TypeChecker.type_check(output);
 			var asm = new x86_Asm.Assembly(output, env, 1);
 			System.out.println(asm.toString());
 		}
-
-
+		if(flag.equals("-s -O3")) { // asm code opt level 1
+			var output = Parser.parse_code( Lexer.Lex(jpl_code), 3);
+			var env = TypeChecker.type_check(output);
+			var asm = new x86_Asm.Assembly(output, env, 3);
+			System.out.println(asm.toString());
+		}
 /*
-		String jpl_code = "show array[i : 256, j : 256] i";
 
-		var output = Parser.parse_code( Lexer.Lex(jpl_code) );
+
+		String jpl_code = "read image \"a.png\" to a\n" +
+				"show a";
+
+		var output = Parser.parse_code( Lexer.Lex(jpl_code), 0);
 		var env = TypeChecker.type_check(output);
-		var asm = new x86_Asm.Assembly(output, env, 1);
+		var asm = new x86_Asm.Assembly(output, env, 0);
 		System.out.println(asm.toString());
+
 */
+
 		System.out.println("Compilation succeeded");
 	}
 
@@ -121,19 +103,6 @@ public class compiler {
 		}
 		return jpl_code;
 	}
-
-	public static String tryGetFileContents(String filepath) {
-		Path fullPath = Paths.get(filepath);
-
-		String jpl_code = "";
-		try {
-			jpl_code = Files.readString(fullPath);
-
-		} catch (IOException e) {
-		}
-		return jpl_code;
-	}
-
 
 }
 
@@ -421,8 +390,20 @@ class x86_Asm {
 				gen_cmd_show(showCmd);
 			else if(cmd instanceof Parser.LetCmd letCmd)
 				gen_cmd_let(letCmd);
+			else if(cmd instanceof Parser.AssertCmd assertCmd)
+				gen_cmd_assert(assertCmd);
 			else if(cmd instanceof Parser.FnCmd fnCmd)
 				gen_cmd_fn(fnCmd);
+			else if(cmd instanceof Parser.ReadCmd readCmd)
+				gen_cmd_read(readCmd);
+			else if(cmd instanceof Parser.WriteCmd writeCmd)
+				gen_cmd_write(writeCmd);
+			else if(cmd instanceof Parser.PrintCmd printCmd)
+				gen_cmd_print(printCmd);
+			else if(cmd instanceof Parser.TimeCmd timeCmd)
+				gen_cmd_time(timeCmd);
+			else if(cmd instanceof Parser.StructCmd structCmd)
+				gen_cmd_struct(structCmd);
 			else throw new ASM_Exception("Unimplemented command type");
 
 		}
@@ -499,7 +480,44 @@ class x86_Asm {
 			gen_expr(cmd.expr);
 			stack.add_lvalue(cmd.lvalue, null);
 		}
-
+		public void gen_cmd_assert(Parser.AssertCmd cmd) {
+			gen_expr(cmd.expr);
+			stack.pop("rax", new TypeChecker.TypeValue("BoolType"));
+			add_line("cmp rax, 0");
+			create_assert(cmd.str, "jne");
+		}
+		public void gen_cmd_read(Parser.ReadCmd cmd) {
+			//var img = new TypeChecker.ArrayType(2, new TypeChecker.StructType("rgba"));
+			var img = new TypeChecker.TypeValue("ArrayType (TupleType (FloatType) (FloatType) (FloatType) (FloatType)) 2");
+			stack.alloc(img, 1);
+			add_line("lea rdi, [rsp]");
+			stack.align(0);
+			const_into_register("rsi", cmd.read_file.substring(1,cmd.read_file.length()-1));
+			add_line("call _read_image");
+			stack.unalign();
+			stack.add_lvalue(cmd.lvalue, null);
+		}
+		public void gen_cmd_write(Parser.WriteCmd cmd) {
+			var img = new TypeChecker.ArrayType(2, new TypeChecker.StructType("rgba"));
+			stack.align(get_size(img));
+			gen_expr(cmd.expr);
+			const_into_register("rdi", cmd.write_file);
+			add_line("call _write_image");
+			stack.free(cmd.expr.type, 1);
+			stack.unalign();
+		}
+		public void gen_cmd_print(Parser.PrintCmd cmd) {
+			const_into_register("rdi", cmd.str);
+			stack.align(0);
+			add_line("call _print");
+			stack.unalign();
+		}
+		public void gen_cmd_time(Parser.TimeCmd cmd) {
+			// TODO
+		}
+		public void gen_cmd_struct(Parser.StructCmd cmd) {
+			return;
+		}
 
 		//
 		//  STATEMENTS
@@ -509,6 +527,8 @@ class x86_Asm {
 				gen_stmt_let(letStmt);
 			else if(stmt instanceof Parser.ReturnStmt retStmt)
 				gen_stmt_ret(retStmt);
+			else if(stmt instanceof Parser.AssertStmt assertStmt)
+				gen_stmt_assert(assertStmt);
 			else throw new ASM_Exception("Unimplemented statement type");
 		}
 
@@ -532,6 +552,12 @@ class x86_Asm {
 			add_line("pop rbp");
 			add_line("ret");
 		}
+		public void gen_stmt_assert(Parser.AssertStmt stmt) {
+			gen_expr(stmt.expr);
+			stack.pop("rax", new TypeChecker.TypeValue("BoolType"));
+			add_line("cmp rax, 0");
+			create_assert(stmt.str, "jne");
+		}
 
 		//
 		//  EXPRESSIONS
@@ -541,6 +567,8 @@ class x86_Asm {
 				gen_expr_int(intExpr);
 			else if(expr instanceof Parser.FloatExpr floatExpr)
 				gen_expr_float(floatExpr);
+			else if(expr instanceof Parser.VoidExpr voidExpr)
+				gen_expr_void(voidExpr);
 			else if(expr instanceof Parser.TrueExpr trueExpr)
 				gen_expr_true(trueExpr);
 			else if(expr instanceof Parser.FalseExpr falseExpr)
@@ -563,6 +591,10 @@ class x86_Asm {
 				gen_expr_loop(arrayLoopExpr);
 			else if(expr instanceof Parser.SumLoopExpr sumLoopExpr)
 				gen_expr_loop(sumLoopExpr);
+			else if(expr instanceof Parser.StructLiteralExpr structLiteralExpr)
+				gen_expr_structlit(structLiteralExpr);
+			else if(expr instanceof Parser.DotExpr dotExpr)
+				gen_expr_dot(dotExpr);
 			else throw new ASM_Exception("Unimplemented expression type");
 		}
 
@@ -582,6 +614,11 @@ class x86_Asm {
 			const_into_register("rax", expr.float_val);
 			stack.push("rax", new TypeChecker.TypeValue("IntType")); // can't do nice workaround removing recharacterize because of this
 			stack.recharacterize(1, expr.type);
+		}
+		public void gen_expr_void(Parser.VoidExpr expr) {
+			const_into_register("rax", 1);
+			stack.push("rax", new TypeChecker.TypeValue("VoidType"));
+			//stack.recharacterize(1, expr.type);
 		}
 		public void gen_expr_true(Parser.TrueExpr expr) {
 			if(parent.OPT_LEVEL > 0) {
@@ -625,6 +662,30 @@ class x86_Asm {
 			} else throw new ASM_Exception("unimplemented unop expression type");
 		}
 		public void gen_expr_binop(Parser.BinopExpr expr) {
+			if(expr.op.equals("||")) {
+				gen_expr(expr.expr1);
+				stack.pop("rax", new TypeChecker.TypeValue("BoolType"));
+				add_line("cmp rax, 0");
+				String label = parent.add_jump();
+				add_line("jne " + label);
+				gen_expr(expr.expr2);
+				stack.pop("rax", new TypeChecker.TypeValue("BoolType"));
+				add_line(label + ":");
+				stack.push("rax", new TypeChecker.TypeValue("BoolType"));
+				return;
+			}
+			else if(expr.op.equals("&&")) {
+				gen_expr(expr.expr1);
+				stack.pop("rax", new TypeChecker.TypeValue("BoolType"));
+				add_line("cmp rax, 0");
+				String label = parent.add_jump();
+				add_line("je " + label);
+				gen_expr(expr.expr2);
+				stack.pop("rax", new TypeChecker.TypeValue("BoolType"));
+				add_line(label + ":");
+				stack.push("rax", new TypeChecker.TypeValue("BoolType"));
+				return;
+			}
 
 			Long lhs_val = getIntValue(expr.expr1);
 			Long rhs_val = getIntValue(expr.expr2);
@@ -937,15 +998,44 @@ class x86_Asm {
 			if(!(expr instanceof Parser.ArrayLoopExpr) && !(expr instanceof Parser.SumLoopExpr))
 				throw new ASM_Exception("gen_expr_loop requires array loop or sum loop");
 
+			boolean is_tc = false;
+			List<String> tc_order = null;
+			// sum bounds for optimized loop
+			List<String> sum_variables = null;
+			List<Parser.Expr> sum_expressions = null;
+
+			// these are the bounds
+			List<String> variables = null;
+			List<Parser.Expr> expressions = null;
+			Parser.Expr loop_expr = null;
+
+			if(expr instanceof Parser.ArrayLoopExpr arrLoop && arrLoop.is_tc) {
+				is_tc = true;
+				add_line("; Tensor contraction detected");
+				add_line("; Nodes");
+				add_line("; Edges");
+				add_line("; Order");
+			}
+
 			add_line("; Allocating 8 bytes for the pointer");
 			stack.alloc(new TypeChecker.TypeValue("IntType"), 1);
 			if(expr instanceof Parser.SumLoopExpr sumLoopExpr)
 				stack.recharacterize(1, sumLoopExpr.type);
 
-			List<String> variables = null;
-			List<Parser.Expr> expressions = null;
-			Parser.Expr loop_expr = null;
-			if(expr instanceof Parser.ArrayLoopExpr arrayLoopExpr) {
+			if(expr instanceof Parser.ArrayLoopExpr arrayLoopExpr && is_tc) {
+				sum_variables = ((Parser.SumLoopExpr)arrayLoopExpr.expr).variables;
+				sum_expressions = ((Parser.SumLoopExpr)arrayLoopExpr.expr).expressions;
+
+				// tc_node and they also correspond to an expression
+				variables = new ArrayList<>(sum_variables);
+				variables.addAll(arrayLoopExpr.variables);
+				expressions = new ArrayList<>(sum_expressions);
+				expressions.addAll(arrayLoopExpr.expressions);
+
+				loop_expr = arrayLoopExpr.expr;
+				tc_order = arrayLoopExpr.tc_order;
+			}
+			else if(expr instanceof Parser.ArrayLoopExpr arrayLoopExpr && !is_tc) {
 				variables = arrayLoopExpr.variables;
 				expressions = arrayLoopExpr.expressions;
 				loop_expr = arrayLoopExpr.expr;
@@ -968,12 +1058,14 @@ class x86_Asm {
 				create_assert("non-positive loop bound", "jg");
 			}
 
-			int n = variables.size();
 			if(expr instanceof Parser.ArrayLoopExpr arrayLoopExpr) {
 				add_line("; Computing total size of heap memory to allocate");
-				int offset = 0; // not actually needed it seems
+				int offset = is_tc ? sum_variables.size() : 0;
+				if(is_tc)
+					add_line("; Offset is " + offset + " sum bounds"); // not sure what goes here but makes diff easier
+
 				add_line("mov rdi, " + (get_size(arrayLoopExpr.expr.type)) + " ; sizeof " + arrayLoopExpr.expr.type);
-				for(int i = 0; i < n; i++) {
+				for(int i = 0; i < arrayLoopExpr.variables.size(); i++) {
 					add_line("imul rdi, [rsp + " + (offset * 8) + " + " + (i*8) + "] ; multiply by BOUND");
 					create_assert("overflow computing array size", "jno");
 				}
@@ -986,7 +1078,7 @@ class x86_Asm {
 				add_line("; Initialize sum to 0");
 				add_line("mov rax, 0");
 			}
-			add_line("mov [rsp + " + (n*8) + "], rax ; Move to pre-allocated space");
+			add_line("mov [rsp + " + (variables.size()*8) + "], rax ; Move to pre-allocated space");
 
 			for(int i = variables.size()-1; i >= 0; i--) {
 				add_line("; Initialize " + variables.get(i) + " to 0");
@@ -998,9 +1090,12 @@ class x86_Asm {
 			String lbl_start = parent.add_jump();
 			add_line(lbl_start + ": ; Begin body of loop");
 			add_line("; Compute loop body");
-			gen_expr(loop_expr);
+			if(is_tc)
+				gen_expr(((Parser.SumLoopExpr)loop_expr).expr);
+			else
+				gen_expr(loop_expr);
 
-			if(expr instanceof Parser.ArrayLoopExpr arrayLoopExpr) {
+			if(expr instanceof Parser.ArrayLoopExpr arrayLoopExpr && !is_tc) {
 				int offset = get_size(arrayLoopExpr.expr.type);
 
 				List<Long> sizes = new ArrayList<>();
@@ -1016,52 +1111,90 @@ class x86_Asm {
 				copy_data(offset, "rsp", "rax");
 				stack.free(arrayLoopExpr.expr.type, 1);
 			}
+			else if(expr instanceof Parser.ArrayLoopExpr arrayLoopExpr && is_tc) {
+				add_line("; Array loop indices skip body");
+				add_line("; Array loop bounds then skip");
+
+				int offset = (8 * sum_variables.size()) + 8;
+				List<Long> sizes = new ArrayList<>();
+				for(var e : arrayLoopExpr.expressions) {
+					if(e instanceof Parser.IntExpr intExpr)
+						sizes.add(intExpr.integer);
+					else
+						sizes.add(null);
+				}
+				index_helper((TypeChecker.ArrayType)arrayLoopExpr.type, offset, expressions.size(), sizes);
+				if(arrayLoopExpr.expr.type.type_name.equals("IntType")) {
+					stack.pop("r10", arrayLoopExpr.expr.type);
+					add_line("add [rax], r10");
+				}
+				else {
+					stack.pop("xmm0", arrayLoopExpr.expr.type);
+					add_line("addsd xmm0, [rax]");
+					add_line("movsd [rax], xmm0");
+				}
+			}
 			else if(expr instanceof Parser.SumLoopExpr sumLoopExpr1) {
 				if(sumLoopExpr1.expr.type.type_name.equals("IntType")) {
 					stack.pop("rax", sumLoopExpr1.expr.type);
-					add_line("add [rsp + " + (2 * n * 8) + "], rax ; Add loop body to sum");
+					add_line("add [rsp + " + (2 * variables.size() * 8) + "], rax ; Add loop body to sum");
 				}
 				else {
 					stack.pop("xmm0", sumLoopExpr1.expr.type);
-					add_line("addsd xmm0, [rsp + " + (2 * n * 8) + "] ; Load sum");
-					add_line("movsd [rsp + " + (2 * n * 8) + "], xmm0 ; Save sum");
+					add_line("addsd xmm0, [rsp + " + (2 * variables.size() * 8) + "] ; Load sum");
+					add_line("movsd [rsp + " + (2 * variables.size() * 8) + "], xmm0 ; Save sum");
 				}
 			}
 
-			int last_offset = variables.size() - 1;
-			String last_var = variables.get(last_offset);
+			String last_var = is_tc ? tc_order.get(tc_order.size() - 1) : variables.get(variables.size() - 1);
 
 			add_line("; Increment " + last_var);
-			add_line("add qword [rsp + " + (last_offset * 8) + "], 1");
-			for(int i = n - 1; i >= 0; i--) {
-				String var = variables.get(i);
-				int offset = i;
+			add_line("add qword [rsp + " + (variables.indexOf(last_var) * 8) + "], 1");
+			for(int i = variables.size() - 1; i >= 0; i--) {
+				String var = is_tc ? tc_order.get(i) : variables.get(i);
+				int offset = variables.indexOf(var);
+
 				add_line("; Compare " + var + " to its bound");
 				add_line("mov rax, [rsp + " + (offset * 8) + "]");
-				add_line("cmp rax, [rsp + " + ((offset + n) * 8) + "]");
+				add_line("cmp rax, [rsp + " + ((offset + variables.size()) * 8) + "]");
 				add_line("jl " + lbl_start + " ; If " + var + " < bound, next iter");
 				if(i != 0) {
-					String next_var = variables.get(i-1);
-					int next_offset = i-1;
+					String next_var = is_tc ? tc_order.get(i-1) : variables.get(i-1);
 					add_line("mov qword [rsp + " + (offset * 8) + "], 0 ; " + var + " = 0");
-					add_line("add qword [rsp + " + (next_offset * 8) + "], 1 ; " + next_var + " = 0");
+					add_line("add qword [rsp + " + (variables.indexOf(next_var) * 8) + "], 1 ; " + next_var + " = 0");
 				}
 			}
 
 			add_line("; End body of loop");
 			add_line("; Free all loop variables");
 			stack.free(new TypeChecker.TypeValue("IntType"), variables.size());
-			if(expr instanceof Parser.SumLoopExpr sumLoopExpr1) {
+			if(expr instanceof Parser.SumLoopExpr sumLoopExpr1 || is_tc) {
 				add_line("; Free all loop bounds");
-				stack.free(new TypeChecker.TypeValue("IntType"), variables.size());
+				stack.free(new TypeChecker.TypeValue("IntType"), is_tc ? sum_variables.size() : variables.size());
 			}
-			else if(expr instanceof Parser.ArrayLoopExpr arrayLoopExpr) {
+			if(expr instanceof Parser.ArrayLoopExpr arrayLoopExpr) {
 				stack.recharacterize(((TypeChecker.ArrayType)arrayLoopExpr.type).rank + 1, expr.type);
 			}
 			add_line("; left on stack");
 
 		}
-
+		public void gen_expr_structlit(Parser.StructLiteralExpr expr) {
+			for(int i = expr.expressions.size() - 1; i >= 0; i--) {
+				gen_expr(expr.expressions.get(i));
+			}
+			stack.recharacterize(expr.expressions.size(), expr.type);
+		}
+		public void gen_expr_dot(Parser.DotExpr expr) {
+			gen_expr(expr.expr);
+			int start = 0; // get ofset?
+			int size = get_size(expr.expr.type);
+			int end = get_size(expr.type) - size;
+			copy_data(size, "rsp + " + start, "rsp + " + end);
+			add_line("add rsp, " + end);
+			pop_list(stack.shadow);
+			stack.shadow.add("" + expr.type.toString());
+			stack.decrement(end);
+		}
 
 		public void index_helper(TypeChecker.ArrayType type, int offset, int gap, List<Long> sizes) {
 			if(parent.OPT_LEVEL <= 0)
@@ -1221,8 +1354,14 @@ class x86_Asm {
 	}
 
 	public static int get_size(TypeChecker.TypeValue type) {
+		if(type.toString().contains("TupleType")) {
+			return 24;
+		}
 		if(type instanceof TypeChecker.ArrayType arrtype)
 			return 8 + (arrtype.rank * 8);
+		else if(type instanceof TypeChecker.StructType structType) {
+			return 4;
+		}
 		else
 			return 8;
 	}
@@ -2798,8 +2937,10 @@ class TypeChecker {
 }
 
 class Parser {
+	public static int OPT = 0;
 
-	public static List<ASTNode> parse_code(List<Lexer.Token> tokens) throws ParserException {
+	public static List<ASTNode> parse_code(List<Lexer.Token> tokens, int OPT_CODE) throws ParserException {
+		OPT = OPT_CODE;
 		try {
 			List<ASTNode> list = new ArrayList<>();
 
@@ -2836,6 +2977,10 @@ class Parser {
 
 	public static class Cmd extends ASTNode {}
 	public static class Expr extends ASTNode {
+		boolean is_tc = false;
+		boolean is_tc_sum = false;
+		boolean is_tc_body = false;
+		boolean is_tc_primitive = false;
 		TypeChecker.TypeValue type;
 
 		protected String getType() {
@@ -3120,6 +3265,8 @@ class Parser {
 			this.start_byte = start_byte;
 			this.end_pos = end_pos;
 			this.integer = integer;
+			this.is_tc_primitive = true;
+			this.is_tc_body = true;
 		}
 
 		@Override
@@ -3134,6 +3281,8 @@ class Parser {
 			this.start_byte = start_byte;
 			this.end_pos = end_pos;
 			this.float_val = float_val;
+			this.is_tc_primitive = true;
+			this.is_tc_body = true;
 		}
 
 		@Override
@@ -3176,6 +3325,8 @@ class Parser {
 			this.start_byte = start_byte;
 			this.end_pos = end_pos;
 			this.str = str;
+			this.is_tc_primitive = true;
+			this.is_tc_body = true;
 		}
 
 		@Override
@@ -3271,6 +3422,18 @@ class Parser {
 			this.end_pos = end_pos;
 			this.expr = expr;
 			this.expressions = expressions;
+
+			if(expr.is_tc_primitive) {
+				boolean all_primitive = true;
+				for(var e : expressions) {
+					if(!e.is_tc_primitive) {
+						all_primitive = false;
+						break;
+					}
+				}
+				if(all_primitive)
+					this.is_tc_body = true;
+			}
 		}
 
 		@Override
@@ -3338,6 +3501,10 @@ class Parser {
 			this.op = op;
 			this.expr1 = expr1;
 			this.expr2 = expr2;
+
+			boolean is_fp_binop = op.equals("+") || op.equals("-") || op.equals("*") || op.equals("/") || op.equals("%");
+			if(expr1.is_tc_body && expr2.is_tc_body && is_fp_binop)
+				this.is_tc_body = true;
 		}
 
 		@Override
@@ -3368,12 +3535,127 @@ class Parser {
 		List<Expr> expressions;
 		Expr expr;
 
+		List<String> tc_nodes = new ArrayList<>();
+		List<String> tc_edges = new ArrayList<>();   //<node1>;<node2>
+		List<String> tc_order = new ArrayList<>();
+
 		public ArrayLoopExpr(int start_byte, int end_pos, List<String> variables, List<Expr> expressions, Expr expr) {
 			this.start_byte = start_byte;
 			this.end_pos = end_pos;
 			this.variables = variables;
 			this.expressions = expressions;
 			this.expr = expr;
+
+			if(OPT < 2)
+				return;
+
+			if(expr.is_tc_sum) {
+				boolean all_primitive = true;
+				for(var e : expressions) {
+					if(!e.is_tc_primitive) {
+						all_primitive = false;
+						break;
+					}
+				}
+				if(all_primitive)
+					this.is_tc = true;
+			}
+
+			if(this.is_tc) {
+				// add nodes
+				tc_nodes.addAll(variables);
+				tc_nodes.addAll(((SumLoopExpr)expr).variables);
+
+				// add edges
+				tc_edges.addAll(getPairsForVariablesList(variables));
+				tc_edges.addAll(getPairsForTCBody(((SumLoopExpr)expr).expr));
+
+				// check redundancy
+				var sum_pairs = getPairsForVariablesList(((SumLoopExpr)expr).variables);
+				List<String> actual = new ArrayList<>();
+				for(String pair : sum_pairs) {
+					var elm = pair.split(";");
+					String rev = elm[1]+";"+elm[0];
+					if(tc_edges.indexOf(rev) == -1) { // revese doesn't exist
+						actual.add(pair);
+					}
+				}
+				tc_edges.addAll(actual);
+
+
+				// remove duplicates
+				tc_nodes = new ArrayList<>(new LinkedHashSet<>(tc_nodes));
+				tc_edges = new ArrayList<>(new LinkedHashSet<>(tc_edges));
+
+				// topo sort
+				tc_order = TopoSort(tc_nodes, tc_edges);
+			}
+
+		}
+
+		public static List<String> getPairsForTCBody(Expr expr) {
+			List<String> ret = new ArrayList<>();
+			if(expr.is_tc_primitive || !expr.is_tc_body)
+				return ret;
+
+			if(expr instanceof BinopExpr binopExpr) {
+				ret.addAll(getPairsForTCBody(binopExpr.expr1));
+				ret.addAll(getPairsForTCBody(binopExpr.expr2));
+			}
+			else if(expr instanceof ArrayIndexExpr arrayIndexExpr) {
+				List<String> variables = new ArrayList<>();
+				for(var e : arrayIndexExpr.expressions) {
+					var v = (VarExpr)e;
+					variables.add(v.str);
+				}
+				ret.addAll(getPairsForVariablesList(variables));
+			}
+			return ret;
+		}
+
+
+		public static List<String> getPairsForVariablesList(List<String> variables) {
+			List<String> ret = new ArrayList<>();
+
+			for(int i = 0; i < variables.size(); i++) {
+				// add one for all to the right
+				for(int j = i+1; j < variables.size(); j++) {
+					ret.add(variables.get(i) + ";" + variables.get(j));
+				}
+			}
+			return ret;
+		}
+
+
+		public static List<String> TopoSort(List<String> nodes, List<String> edges) {
+			List<String> sorted = new ArrayList<>();
+			// copies
+			List<String> remainingNodes = new ArrayList<>(nodes);
+			List<String> remainingEdges = new ArrayList<>(edges);
+
+			while(!remainingNodes.isEmpty()) {
+				for (String node : remainingNodes) {
+					boolean isTarget = false;
+
+					for (String edge : remainingEdges) {
+						String dst = edge.split(";")[1];
+						if (dst.equals(node)) {
+							isTarget = true;
+							break;
+						}
+					}
+
+					if (!isTarget) {
+						sorted.add(node);
+						remainingNodes.remove(node);
+						// remove any edges whose source is this node
+						remainingEdges.removeIf(edge -> edge.split(";")[0].equals(node));
+						break;
+					}
+				}
+			}
+
+			return sorted;
 		}
 
 		@Override
@@ -3395,7 +3677,6 @@ class Parser {
 		}
 	}
 	public static class SumLoopExpr extends Expr {
-
 		List<String> variables;
 		List<Expr> expressions;
 		Expr expr;
@@ -3406,6 +3687,18 @@ class Parser {
 			this.variables = variables;
 			this.expressions = expressions;
 			this.expr = expr;
+
+			if(expr.is_tc_body) {
+				boolean all_primitive = true;
+				for(var e : expressions) {
+					if(!e.is_tc_primitive) {
+						all_primitive = false;
+						break;
+					}
+				}
+				if(all_primitive)
+					this.is_tc_sum = true;
+			}
 		}
 
 		@Override

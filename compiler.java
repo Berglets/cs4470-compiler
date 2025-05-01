@@ -81,7 +81,7 @@ public class compiler {
 		var env = TypeChecker.type_check(output);
 		var asm = new x86_Asm.Assembly(output, env, 0);
 		System.out.println(asm.toString());
-
+a
 */
 
 		System.out.println("Compilation succeeded");
